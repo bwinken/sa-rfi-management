@@ -1,0 +1,62 @@
+# 預設組態：單一副本 + SQLite，狀態全部放在具名 volume。
+#   docker compose up -d
+#
+# 要改用 PostgreSQL（多副本或想用既有 DB 時）：
+#   docker compose --profile postgres up -d
+# 這會另外起一個 db 服務，並讓 app 走 DATABASE_URL。
+
+services:
+  app:
+    build: .
+    image: sa-rfi-management:latest
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      # ── 對外位址 ──
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8003}
+
+      # ── Auth Center SSO ──
+      AUTH_CENTER_BASE_URL: ${AUTH_CENTER_BASE_URL:-http://localhost:8000}
+      APP_ID: ${APP_ID:-sa_rfi_management}
+      CLIENT_SECRET: ${CLIENT_SECRET:?請在 .env 或環境變數設定 CLIENT_SECRET}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+
+      # ── 狀態：容器內一律寫在 /data，對應下方的 volume ──
+      DATA_DIR: /data
+      # 留空 = 用 /data/sa_rfi.db（SQLite）。要走 Postgres 就設定這個：
+      DATABASE_URL: ${DATABASE_URL:-}
+
+      # 日誌走 stdout，用 docker compose logs 看
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 多副本時設成 image tag / commit sha，讓各副本的靜態資源版本一致
+      ASSET_VERSION: ${ASSET_VERSION:-}
+    volumes:
+      - sa-rfi-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8003/readyz', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  db:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sa_rfi}
+      POSTGRES_USER: ${POSTGRES_USER:-sarfi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請設定 POSTGRES_PASSWORD}
+    volumes:
+      - sa-rfi-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sarfi} -d ${POSTGRES_DB:-sa_rfi}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  # SQLite 檔與附件；用 Postgres 時這個 volume 只剩附件
+  sa-rfi-data:
+  sa-rfi-db:

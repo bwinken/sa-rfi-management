@@ -100,6 +100,60 @@ uv run python scripts/seed_demo.py           # 寫入 8 筆示範 RFI
 uv run python scripts/seed_demo.py --clear   # 先清空再寫入
 ```
 
+## 容器部署
+
+App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東西。
+會被寫入且必須留存的只有兩類 —— **資料庫**與**附件** —— 兩者都放在 `DATA_DIR`
+（容器內預設 `/data`）底下，部署時掛成 volume 即可。日誌只走 stdout/stderr，
+匯出的 Excel / PPT 全在記憶體組完直接回應，不落地。
+
+```bash
+# 單機：SQLite + 具名 volume
+docker compose up -d
+
+# 單機：改用 PostgreSQL（會多起一個 db 服務）
+POSTGRES_PASSWORD=... DATABASE_URL=postgresql://sarfi:...@db:5432/sa_rfi \
+    docker compose --profile postgres up -d
+```
+
+Kubernetes 範例（PVC、probes、`fsGroup` 權限對齊）見 `deploy/kubernetes.yaml`。
+
+### 資料庫：SQLite 還是 PostgreSQL
+
+兩種都支援，靠同一個 `DATABASE_URL` 切換，程式碼不用改：
+
+| | SQLite（預設） | PostgreSQL |
+|---|---|---|
+| 設定 | `DATABASE_URL` 留空 | `DATABASE_URL=postgresql://user:pw@host:5432/sa_rfi` |
+| 副本數 | **只能 1**（SQLite 不支援多寫入者） | 可多副本 |
+| 需要的儲存 | 一個 RWO volume 就夠 | DB 自己的儲存；附件仍需 volume |
+| 適合 | 十幾個 SA 的內部工具 | 要 HA、或想接既有 DB 叢集 |
+
+連線字串可以直接貼常見的同步版 `postgresql://...`，App 會自動補上 async
+driver（`postgresql+asyncpg://`），不用記得改。
+
+> 建議先從 SQLite 開始。以這個平台的用量（每週幾十筆 RFI），單一副本綽綽有餘，
+> 而且少一個要顧的元件。之後真的要 HA 再換 PostgreSQL —— 換的時候只有
+> `DATABASE_URL` 這一行要動。
+
+### 多副本要注意的兩件事
+
+1. **附件是檔案，不是資料庫欄位**。多副本必須共用同一份儲存
+   （RWX 的 PVC：NFS / CephFS / EFS…），否則 A 副本收的附件 B 副本看不到。
+2. **`ASSET_VERSION` 要設成固定值**（image tag 或 commit sha）。
+   否則每個副本各自用啟動時間當靜態資源版本，使用者在副本間跳轉會一直重抓 CSS。
+
+### 健康檢查
+
+| 端點 | 用途 | 行為 |
+|---|---|---|
+| `/healthz` | liveness | 只確認行程活著，不碰外部相依 |
+| `/readyz` | readiness | 檢查資料庫連得上、`DATA_DIR` 可寫；有問題回 503 並附上哪一項壞了 |
+
+volume 沒掛好或權限不對時，App **啟動就會失敗**並印出實際原因與 UID，
+不會裝作正常跑到有人上傳附件才炸。容器內以 UID/GID `10001` 執行，
+Kubernetes 請設 `securityContext.fsGroup: 10001` 讓 volume 權限對齊。
+
 ## 與 Auth Center 整合
 
 認證流程與 Auth Center `example_app` 一致：
@@ -141,19 +195,22 @@ python scripts/manage_permissions.py grant <employee> sa_rfi_management --level 
 |------|------|------|
 | `APP_BASE_URL` | 本平台對外的 Base URL | `http://localhost:8003` |
 | `ROOT_PATH` | 反向代理子路徑前綴，留空自動由 `APP_BASE_URL` 推導 | （自動） |
+| `DATA_DIR` | **所有狀態的根目錄**（SQLite 檔 + 附件），容器部署掛成 volume | `.` |
+| `DATABASE_URL` | 留空＝用 `{DATA_DIR}/sa_rfi.db`；填 PostgreSQL 連線字串即改用 PG | （空） |
+| `ASSET_VERSION` | 靜態資源版本，多副本請設成 image tag / commit sha | （啟動時間） |
 | `AUTH_CENTER_BASE_URL` | Auth Center 位址 | `http://localhost:8000` |
 | `APP_ID` | 在 apps.yaml 註冊的 App ID | `sa_rfi_management` |
 | `CLIENT_SECRET` | App 明文密鑰 | — |
 | `REDIRECT_URI` | OAuth callback，留空自動組出 | （自動） |
 | `JWKS_URL` | 驗章公鑰端點，留空自動推導；設為空字串則停用 | （自動） |
 | `PUBLIC_KEY_PATH` | 離線後備的 RS256 公鑰路徑 | `./keys/public.pem` |
-| `SQLITE_PATH` | SQLite 資料庫檔案 | `./sa_rfi.db` |
-| `UPLOAD_DIR` | 附件目錄 | `./uploads` |
+| `SQLITE_PATH` | 單獨指定 SQLite 檔位置（一般不需要，用 `DATA_DIR` 即可） | `{DATA_DIR}/sa_rfi.db` |
+| `UPLOAD_DIR` | 單獨指定附件目錄（一般不需要） | `{DATA_DIR}/uploads` |
 | `MAX_UPLOAD_MB` | 單檔大小上限 | `25` |
 | `DECK_TITLE` | 匯出投影片的標題（自動接上週別區間） | `Customer RFI Collection` |
 | `COOKIE_SECURE` | Cookie 限定 HTTPS（正式設 true） | `false` |
 | `DESIGNED_BY` / `EXECUTED_BY` | 頁尾署名（留空不顯示） | — |
-| `LOG_LEVEL` / `LOG_FILE` | loguru 等級與輪替檔位置 | `INFO` / `./logs/sa_rfi.log` |
+| `LOG_LEVEL` / `LOG_FILE` | loguru 等級；`LOG_FILE` 留空＝只輸出 stdout（容器請留空） | `INFO` / （空） |
 | `DEV_AUTH_BYPASS` | 略過認證（僅開發） | `false` |
 
 ## 專案結構
@@ -172,9 +229,12 @@ app/
 templates/         Jinja2 HTML（list / form / detail / history / dashboard / import / login / error）
 static/css/style.css   樣式
 static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）
-scripts/backup.py      SQLite online backup + 附件打包
+scripts/backup.py      資料庫備份（SQLite online backup / pg_dump）+ 附件打包
 scripts/seed_demo.py   示範資料
-uploads/           附件儲存
+uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
+Dockerfile         多階段建置，非 root 執行
+docker-compose.yml 單機部署（預設 SQLite；--profile postgres 可換 PG）
+deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）
 ```
 
 ## 新增 / 調整 RFI 欄位
@@ -206,13 +266,22 @@ uploads/           附件儲存
 
 ## 備份
 
-服務運行中也可安全執行（SQLite online backup API，不需停機）：
+服務運行中也可安全執行，兩種資料庫都支援（SQLite 走 online backup API，
+PostgreSQL 走 `pg_dump -Fc`），附件目錄一併打包：
 
 ```bash
 uv run python scripts/backup.py /data/backups
+
+# 容器部署時，讓備份工作掛上同一個 data volume：
+docker run --rm -v sa-rfi-data:/data -v /srv/backups:/backups \
+    -e DATA_DIR=/data sa-rfi-management:latest \
+    python scripts/backup.py /backups
+
 # 建議搭配 cron，每日 02:00：
 # 0 2 * * * cd /path/to/sa-rfi-management && .venv/bin/python scripts/backup.py /data/backups
 ```
+
+預設保留最近 14 份（`BACKUP_KEEP` 可調）。
 
 ## 部署注意
 

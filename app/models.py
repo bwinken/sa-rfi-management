@@ -4,7 +4,7 @@ RFI 的所有欄位以 JSON 形式存放在 Rfi.data，方便整份快照寫入�
 （RfiRevision）與彈性擴充欄位；列表常用的欄位另外萃取成資料表欄位以利查詢。
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -27,7 +27,7 @@ class Rfi(Base):
     rfi_no: Mapped[str] = mapped_column(String(32), default="", index=True)
 
     # 從 data 萃取出的便利欄位，供列表、篩選與統計使用
-    rfi_date: Mapped[str] = mapped_column(Date, nullable=True, index=True)
+    rfi_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     week: Mapped[str] = mapped_column(String(8), default="", index=True)
     client: Mapped[str] = mapped_column(String(64), default="", index=True)
     vendor: Mapped[str] = mapped_column(String(64), default="", index=True)

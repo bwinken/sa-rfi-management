@@ -18,8 +18,10 @@ from .auth import (
     optional_user,
     public_key_available,
 )
-from .config import settings
-from .database import init_db
+from .config import prepare_storage, settings
+from sqlalchemy import text
+
+from .database import engine, init_db
 from .log import setup_logging
 from .query import query_string
 from .routes import exports as exports_routes
@@ -28,16 +30,32 @@ from .routes import rfis as rfis_routes
 setup_logging()
 
 
+def _safe_db_url(url: str) -> str:
+    """遮蔽連線字串裡的密碼，避免寫進日誌。"""
+    if "@" not in url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    creds, host = rest.rsplit("@", 1)
+    user = creds.split(":", 1)[0]
+    return f"{scheme}://{user}:***@{host}" if ":" in creds else url
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # 先確認狀態目錄可寫，再碰資料庫；volume 沒掛好就直接啟動失敗
+    prepare_storage(settings)
     await init_db()
     app.state.http_client = httpx.AsyncClient(timeout=10.0)
     logger.info(
-        "SA RFI 平台啟動 | base_url={} | db={} | upload_dir={} | dev_bypass={}",
-        settings.APP_BASE_URL, settings.DATABASE_URL,
-        settings.UPLOAD_DIR, settings.DEV_AUTH_BYPASS,
+        "SA RFI 平台啟動 | base_url={} | db={} | data_dir={} | upload_dir={} | dev_bypass={}",
+        settings.APP_BASE_URL, _safe_db_url(settings.DATABASE_URL),
+        settings.DATA_DIR, settings.UPLOAD_DIR, settings.DEV_AUTH_BYPASS,
     )
+    if settings.is_sqlite:
+        logger.info(
+            "資料庫為 SQLite（{}）—— 只能單一副本執行；要跑多副本請改用 "
+            "PostgreSQL（設定 DATABASE_URL）。", settings.SQLITE_PATH,
+        )
     if settings.DEV_AUTH_BYPASS:
         logger.warning(
             "＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n"
@@ -94,8 +112,9 @@ templates.env.globals["settings"] = settings
 templates.env.globals["fdisplay"] = fields_module.display
 templates.env.globals["week_label"] = fields_module.week_label
 templates.env.globals["root"] = ROOT
-# 啟動時間作為靜態資源版本，重啟即可讓瀏覽器重新抓 CSS（避免快取舊樣式）
-templates.env.globals["asset_ver"] = str(int(time.time()))
+# 靜態資源版本：多副本部署時設 ASSET_VERSION（image tag / commit sha）讓各副本一致；
+# 未設定則用啟動時間，重啟即可讓瀏覽器重新抓 CSS（避免快取舊樣式）
+templates.env.globals["asset_ver"] = settings.ASSET_VERSION or str(int(time.time()))
 templates.env.globals["qs_without"] = qs_without
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -171,7 +190,37 @@ async def logout():
 
 @app.get("/healthz")
 async def healthz():
+    """Liveness：行程還活著就好，不碰任何外部相依。"""
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness：資料庫連得上、狀態目錄可寫，才算可以接流量。
+
+    容器平台用這支來決定要不要把流量導進來；volume 掉了或 DB 連不上時
+    會回 503，而不是讓使用者撞到 500。
+    """
+    checks: dict[str, str] = {}
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {type(e).__name__}"
+    try:
+        prepare_storage(settings)
+        checks["storage"] = "ok"
+    except Exception as e:
+        checks["storage"] = f"error: {e}"
+
+    ready = all(v == "ok" for v in checks.values())
+    if not ready:
+        logger.warning("readiness 檢查未通過：{}", checks)
+    return JSONResponse(
+        {"status": "ready" if ready else "not ready", "checks": checks},
+        status_code=200 if ready else 503,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -18,6 +18,8 @@ dependencies = [
     "loguru>=0.7.2",
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
+    # PostgreSQL 用的 async driver；DATABASE_URL 指向 SQLite 時不會被載入
+    "asyncpg>=0.30.0",
 ]
 
 # 本專案是「應用程式」而非可安裝套件，uv sync 只需建立環境並安裝相依套件
