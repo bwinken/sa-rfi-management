@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+    branches: ["main"]
+
+# 同一分支的新 push 取消還在跑的舊 job
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.9.28"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: ruff check
+        run: uv run ruff check app scripts tests
+
+  test-sqlite:
+    name: Tests (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  test-postgres:
+    # 平台同時支援 SQLite 與 PostgreSQL，兩邊都要跑，否則
+    # SQLite 專屬的行為（例如方言差異）會在正式環境才炸
+    name: Tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sarfi
+          POSTGRES_PASSWORD: sarfi
+          POSTGRES_DB: sa_rfi_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sarfi -d sa_rfi_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: pytest against PostgreSQL
+        env:
+          # conftest 看到這個變數就會改用 PostgreSQL
+          SA_RFI_TEST_DATABASE_URL: postgresql://sarfi:sarfi@localhost:5432/sa_rfi_test
+        run: uv run pytest -q
+
+  migration:
+    name: SQLite → PostgreSQL 搬移
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sarfi
+          POSTGRES_PASSWORD: sarfi
+          POSTGRES_DB: sa_rfi_migrated
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sarfi -d sa_rfi_migrated"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: 建立 SQLite 資料並搬到 PostgreSQL
+        env:
+          DATA_DIR: ./ci-data
+          DEV_AUTH_BYPASS: "true"
+        run: |
+          mkdir -p ./ci-data
+          uv run python scripts/seed_demo.py
+          uv run python scripts/migrate_sqlite_to_postgres.py \
+            --source ./ci-data/sa_rfi.db \
+            --target postgresql://sarfi:sarfi@localhost:5432/sa_rfi_migrated
+      - name: 搬移後的資料庫可正常啟動與查詢
+        env:
+          DATABASE_URL: postgresql://sarfi:sarfi@localhost:5432/sa_rfi_migrated
+          DATA_DIR: ./ci-data
+          DEV_AUTH_BYPASS: "true"
+        run: |
+          uv run python - <<'PY'
+          import asyncio, httpx
+          from app.main import app, lifespan
+
+          async def main():
+              async with lifespan(app):
+                  transport = httpx.ASGITransport(app=app)
+                  async with httpx.AsyncClient(transport=transport,
+                                               base_url="http://t") as c:
+                      body = (await c.get("/api/v1/rfis")).json()
+                      assert body["total"] == 8, body["total"]
+                      assert (await c.get("/readyz")).status_code == 200
+                      print(f"搬移後讀得到 {body['total']} 筆")
+          asyncio.run(main())
+          PY
+
+  backup:
+    name: 備份腳本
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: SQLite 備份可產出且可還原
+        env:
+          DATA_DIR: ./ci-data
+          DEV_AUTH_BYPASS: "true"
+        run: |
+          mkdir -p ./ci-data
+          uv run python scripts/seed_demo.py
+          uv run python scripts/backup.py ./ci-backups
+          test -f ./ci-backups/sa_rfi_*.db
+          uv run python -c "
+          import glob, sqlite3
+          db = glob.glob('./ci-backups/sa_rfi_*.db')[0]
+          n = sqlite3.connect(db).execute('select count(*) from rfis').fetchone()[0]
+          assert n == 8, n
+          print(f'備份內含 {n} 筆')"
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sa-rfi-management:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: 容器能起來且 readiness 通過
+        run: |
+          docker run -d --name sarfi -p 8003:8003 \
+            -e DEV_AUTH_BYPASS=true \
+            sa-rfi-management:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8003/readyz > /dev/null; then
+              echo "readiness OK（第 ${i} 次嘗試）"
+              curl -s http://127.0.0.1:8003/readyz
+              docker rm -f sarfi > /dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "容器未在 60 秒內就緒："
+          docker logs sarfi
+          exit 1

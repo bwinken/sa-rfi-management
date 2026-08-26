@@ -3,7 +3,9 @@ name = "sa-rfi-management"
 version = "1.0.0"
 description = "SA RFI 管理平台 — 業務/SA 收集、追蹤、彙整客戶 RFI 並產出週報投影片"
 readme = "README.md"
-requires-python = ">=3.11"
+# 上限 3.14：mcp 在 3.14+ 要求 starlette>=0.48，與目前 pin 的 FastAPI 衝突。
+# 實際建置與部署都是 3.11（見 Dockerfile），這裡如實收斂而不是硬升 FastAPI。
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi[standard]==0.115.6",
     "uvicorn[standard]==0.34.0",
@@ -18,8 +20,40 @@ dependencies = [
     "loguru>=0.7.2",
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
+    # PostgreSQL 用的 async driver；DATABASE_URL 指向 SQLite 時不會被載入
+    "asyncpg>=0.30.0",
+    # MCP server（掛在同一個 FastAPI app 的 /mcp 底下）
+    "mcp>=2.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.9",
 ]
 
 # 本專案是「應用程式」而非可安裝套件，uv sync 只需建立環境並安裝相依套件
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 專案不是可安裝套件（package = false），需要把根目錄放進 sys.path
+pythonpath = ["."]
+asyncio_mode = "auto"
+# 每個測試各自建立事件迴圈，避免共用 engine 的狀態互相污染
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+# 壓掉 aiosqlite / sqlalchemy 的 DEBUG 噪音，失敗訊息才看得清楚
+log_level = "WARNING"
+
+[tool.ruff]
+line-length = 100
+exclude = [".venv", "uploads", "logs"]
+
+[tool.ruff.lint]
+# 與開發期間實際採用的規則一致：正確性（F）＋ pycodestyle（E/W）。
+# isort（I）、pyupgrade（UP）、bugbear（B）會對既有程式碼產生大量變更，
+# 想採用的話建議獨立一個 PR 處理，不要和功能變更混在一起。
+select = ["F", "E", "W"]

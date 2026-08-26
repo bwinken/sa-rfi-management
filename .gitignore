@@ -26,3 +26,7 @@ keys/*.pem
 
 # ruff 快取
 .ruff_cache/
+
+# 公司 CA 憑證由各自環境放入，不進版控
+certs/*.crt
+certs/*.pem

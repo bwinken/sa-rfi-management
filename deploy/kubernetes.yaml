@@ -1,0 +1,123 @@
+# Kubernetes 部署範例：單一副本 + SQLite（PVC）。
+# 要跑多副本請往下看檔尾的說明，必須先換成 PostgreSQL。
+#
+#   kubectl apply -f deploy/kubernetes.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sa-rfi-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sa-rfi-secrets
+type: Opaque
+stringData:
+  # 部署前請換成實際值（或改用你們的 secret 管理工具）
+  CLIENT_SECRET: change_me
+  # 用 PostgreSQL 時才需要；留空則走 PVC 上的 SQLite
+  DATABASE_URL: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sa-rfi-management
+spec:
+  # SQLite 只能 1；換成 PostgreSQL 後才可以往上調
+  replicas: 1
+  strategy:
+    # RWO 的 PVC 同時間只能掛在一個節點，滾動更新會卡住，所以用 Recreate
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sa-rfi-management
+  template:
+    metadata:
+      labels:
+        app: sa-rfi-management
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        # 讓掛進來的 volume 屬於容器的 group，否則寫不進去
+        fsGroup: 10001
+      containers:
+        - name: app
+          image: sa-rfi-management:latest
+          ports:
+            - containerPort: 8003
+          env:
+            - name: APP_BASE_URL
+              value: "https://rfi.example.com"
+            - name: AUTH_CENTER_BASE_URL
+              value: "http://auth-center"
+            - name: APP_ID
+              value: "sa_rfi_management"
+            - name: COOKIE_SECURE
+              value: "true"
+            - name: DATA_DIR
+              value: "/data"
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: sa-rfi-secrets, key: CLIENT_SECRET }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: sa-rfi-secrets, key: DATABASE_URL }
+            # 讓所有副本的靜態資源版本一致
+            - name: ASSET_VERSION
+              value: "1.0.0"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # rootfs 唯讀時，仍要給程式一個可寫的 /tmp
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8003 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            # 這支會檢查 DB 連線與 /data 是否可寫
+            httpGet: { path: /readyz, port: 8003 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sa-rfi-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sa-rfi-management
+spec:
+  selector:
+    app: sa-rfi-management
+  ports:
+    - port: 80
+      targetPort: 8003
+---
+# ── 要跑多副本時 ────────────────────────────────────────────
+# 1. 準備一個 PostgreSQL，把連線字串放進 sa-rfi-secrets.DATABASE_URL：
+#      postgresql://sarfi:<password>@postgres:5432/sa_rfi
+#    （App 會自動補上 asyncpg driver）
+# 2. 附件仍寫在 /data，多副本必須共用同一份儲存：
+#    把 PVC 換成支援 ReadWriteMany 的 StorageClass（NFS / CephFS / EFS…），
+#    並把 strategy 改回 RollingUpdate。
+# 3. replicas 就可以往上調了。

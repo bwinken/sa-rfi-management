@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""線上備份：SQLite 資料庫 + 附件目錄。
+"""線上備份：資料庫 + 附件目錄。
 
-服務運行中也可安全執行（使用 SQLite online backup API，不需停機）。
-讀取與主程式相同的 .env 設定（SQLITE_PATH / UPLOAD_DIR）。
+服務運行中也可安全執行，兩種資料庫都支援：
+  - SQLite：用 online backup API 取一致性快照，不需停機
+  - PostgreSQL：呼叫 pg_dump（需要 PATH 上有 pg_dump）
+
+讀取與主程式相同的設定（DATA_DIR / SQLITE_PATH / DATABASE_URL / UPLOAD_DIR）。
 
 用法：
     python scripts/backup.py [備份目的資料夾，預設 ./backups]
 
-建議搭配 cron，例如每日 02:00：
+容器部署時，讓備份工作掛上同一個 data volume 再執行，例如：
+    docker run --rm -v sa-rfi-data:/data -v /srv/backups:/backups \
+        -e DATA_DIR=/data sa-rfi-management:latest \
+        python scripts/backup.py /backups
+
+搭配 cron，例如每日 02:00：
     0 2 * * * cd /path/to/sa-rfi-management && .venv/bin/python scripts/backup.py /data/backups
 """
 
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tarfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from dotenv import load_dotenv
@@ -24,40 +35,85 @@ try:
 except ImportError:
     pass
 
-SQLITE_PATH = Path(os.getenv("SQLITE_PATH", "./sa_rfi.db"))
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "."))
+SQLITE_PATH = Path(os.getenv("SQLITE_PATH") or DATA_DIR / "sa_rfi.db")
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR") or DATA_DIR / "uploads")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 KEEP = int(os.getenv("BACKUP_KEEP", "14"))  # 保留最近幾份
+
+
+def _is_postgres() -> bool:
+    return DATABASE_URL.startswith(("postgres://", "postgresql://", "postgresql+"))
+
+
+def backup_sqlite(dest: Path, stamp: str) -> Path | None:
+    if not SQLITE_PATH.exists():
+        print(f"略過資料庫：找不到 {SQLITE_PATH}")
+        return None
+    out = dest / f"sa_rfi_{stamp}.db"
+    src = sqlite3.connect(str(SQLITE_PATH))
+    dst = sqlite3.connect(str(out))
+    with dst:
+        src.backup(dst)   # 一致性快照，不影響進行中的交易
+    dst.close()
+    src.close()
+    return out
+
+
+def backup_postgres(dest: Path, stamp: str) -> Path | None:
+    if shutil.which("pg_dump") is None:
+        print("錯誤：DATABASE_URL 指向 PostgreSQL，但 PATH 上找不到 pg_dump。", file=sys.stderr)
+        return None
+    # SQLAlchemy 的 +asyncpg 後綴 pg_dump 不認得，先拿掉
+    url = DATABASE_URL.replace("+asyncpg", "").replace("postgres://", "postgresql://", 1)
+    out = dest / f"sa_rfi_{stamp}.dump"
+    # -Fc（custom format）壓縮且可用 pg_restore 選擇性還原
+    result = subprocess.run(
+        ["pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", str(out), url],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"pg_dump 失敗：{result.stderr.strip()}", file=sys.stderr)
+        out.unlink(missing_ok=True)
+        return None
+    return out
 
 
 def main() -> int:
     dest = Path(sys.argv[1] if len(sys.argv) > 1 else "./backups")
     dest.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    failed = False
 
-    # 1) SQLite online backup（一致性快照，不影響進行中的交易）
-    db_out = dest / f"sa_rfi_{stamp}.db"
-    src = sqlite3.connect(str(SQLITE_PATH))
-    dst = sqlite3.connect(str(db_out))
-    with dst:
-        src.backup(dst)
-    dst.close()
-    src.close()
-    print(f"DB  -> {db_out}")
+    # 1) 資料庫
+    if _is_postgres():
+        target = urlparse(DATABASE_URL.replace("+asyncpg", "")).path.lstrip("/")
+        print(f"資料庫：PostgreSQL（{target}）")
+        db_out = backup_postgres(dest, stamp)
+    else:
+        print(f"資料庫：SQLite（{SQLITE_PATH}）")
+        db_out = backup_sqlite(dest, stamp)
+    if db_out:
+        print(f"DB   -> {db_out}（{db_out.stat().st_size / 1024:.0f} KB）")
+    else:
+        failed = True
 
     # 2) 附件目錄打包
     if UPLOAD_DIR.exists():
         tar_out = dest / f"uploads_{stamp}.tar.gz"
         with tarfile.open(tar_out, "w:gz") as tar:
             tar.add(UPLOAD_DIR, arcname="uploads")
-        print(f"檔案 -> {tar_out}")
+        print(f"附件 -> {tar_out}（{tar_out.stat().st_size / 1024:.0f} KB）")
+    else:
+        print(f"略過附件：找不到 {UPLOAD_DIR}")
 
     # 3) 清理舊備份（各自保留最近 KEEP 份）
-    for pattern in ("sa_rfi_*.db", "uploads_*.tar.gz"):
-        old = sorted(dest.glob(pattern))[:-KEEP]
-        for p in old:
+    for pattern in ("sa_rfi_*.db", "sa_rfi_*.dump", "uploads_*.tar.gz"):
+        for p in sorted(dest.glob(pattern))[:-KEEP]:
             p.unlink()
             print(f"清理 -> {p.name}")
-    return 0
+
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -31,6 +31,9 @@
                 <span class="material-icons-outlined">upload_file</span> 匯入 Excel
             </a>
             {% endif %}
+            <a href="{{ root }}/tokens" class="topbar-link {% if active == 'tokens' %}active{% endif %}">
+                <span class="material-icons-outlined">key</span> API Token
+            </a>
         </nav>
         <div class="topbar-right">
             {% if user %}
