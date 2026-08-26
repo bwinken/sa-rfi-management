@@ -1,13 +1,24 @@
 # 預設組態：單一副本 + SQLite，狀態全部放在具名 volume。
+#
+#   cp .env.example .env     # 填 CLIENT_SECRET 等；內網再加 proxy 設定
 #   docker compose up -d
 #
-# 要改用 PostgreSQL（多副本或想用既有 DB 時）：
-#   docker compose --profile postgres up -d
-# 這會另外起一個 db 服務，並讓 app 走 DATABASE_URL。
+# 之後要改用 PostgreSQL，疊上 override 檔即可（不必改這一份）：
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+# 搬移既有 SQLite 資料的做法見 README「從 SQLite 換到 PostgreSQL」。
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      # 內網環境把這些放進同目錄的 .env，docker compose build 就會帶進去。
+      # 公司自簽 CA 請把 .crt 放到 certs/（不必在這裡設定）。
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     image: sa-rfi-management:latest
     restart: unless-stopped
     ports:
@@ -19,7 +30,8 @@ services:
       # ── Auth Center SSO ──
       AUTH_CENTER_BASE_URL: ${AUTH_CENTER_BASE_URL:-http://localhost:8000}
       APP_ID: ${APP_ID:-sa_rfi_management}
-      CLIENT_SECRET: ${CLIENT_SECRET:?請在 .env 或環境變數設定 CLIENT_SECRET}
+      # 正式使用時請在 .env 設定；只是先跑起來看畫面（DEV_AUTH_BYPASS=true）可留空
+      CLIENT_SECRET: ${CLIENT_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
 
       # ── 狀態：容器內一律寫在 /data，對應下方的 volume ──
@@ -29,6 +41,17 @@ services:
 
       # 日誌走 stdout，用 docker compose logs 看
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 反向代理子路徑（部署在 http://host/sa-rfi/ 之類時才需要）
+      ROOT_PATH: ${ROOT_PATH:-}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      DECK_TITLE: ${DECK_TITLE:-Customer RFI Collection}
+      DESIGNED_BY: ${DESIGNED_BY:-}
+      EXECUTED_BY: ${EXECUTED_BY:-}
+
+      # ⚠️ 僅供 Auth Center 還沒接好時先把畫面跑起來看；正式環境務必維持 false
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
+      DEV_USER: ${DEV_USER:-dev.user}
+      DEV_SCOPES: ${DEV_SCOPES:-read,write,admin}
       # 多副本時設成 image tag / commit sha，讓各副本的靜態資源版本一致
       ASSET_VERSION: ${ASSET_VERSION:-}
     volumes:
@@ -40,23 +63,7 @@ services:
       start_period: 15s
       retries: 3
 
-  db:
-    profiles: ["postgres"]
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-sa_rfi}
-      POSTGRES_USER: ${POSTGRES_USER:-sarfi}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請設定 POSTGRES_PASSWORD}
-    volumes:
-      - sa-rfi-db:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sarfi} -d ${POSTGRES_DB:-sa_rfi}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
 volumes:
-  # SQLite 檔與附件；用 Postgres 時這個 volume 只剩附件
+  # SQLite 檔與附件；改用 Postgres 時這個 volume 只剩附件
   sa-rfi-data:
-  sa-rfi-db:

@@ -108,15 +108,50 @@ App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東�
 匯出的 Excel / PPT 全在記憶體組完直接回應，不落地。
 
 ```bash
-# 單機：SQLite + 具名 volume
+cp .env.example .env      # 填 CLIENT_SECRET 等；內網再加 proxy 設定（見下）
 docker compose up -d
-
-# 單機：改用 PostgreSQL（會多起一個 db 服務）
-POSTGRES_PASSWORD=... DATABASE_URL=postgresql://sarfi:...@db:5432/sa_rfi \
-    docker compose --profile postgres up -d
+docker compose logs -f app
 ```
 
+Auth Center 還沒接好、只想先把畫面跑起來看，可在 `.env` 加 `DEV_AUTH_BYPASS=true`
+（**正式環境務必移除**）。
+
 Kubernetes 範例（PVC、probes、`fsGroup` 權限對齊）見 `deploy/kubernetes.yaml`。
+
+### 內網 build：proxy / 私有 PyPI / 公司 CA
+
+build 需要下載套件，內網環境通常要走 proxy、指到內部 PyPI 鏡像，
+或信任公司的自簽憑證。這些都是 build args，寫進 `.env` 後 `docker compose build`
+會自動帶入，**不需要改 Dockerfile**：
+
+```bash
+# .env
+HTTPS_PROXY=http://proxy.corp:3128
+HTTP_PROXY=http://proxy.corp:3128
+NO_PROXY=localhost,127.0.0.1,.corp
+PIP_INDEX_URL=https://nexus.corp/repository/pypi-proxy/simple
+PIP_TRUSTED_HOST=nexus.corp
+```
+
+公司自簽 / 攔截式 proxy 的 CA 憑證，放進 `certs/` 即可（`.crt`、PEM 格式）：
+
+```bash
+cp /path/to/corp-root-ca.crt certs/
+docker compose build
+```
+
+`certs/` 的內容會裝進 image 的信任清單，**build 階段**（下載套件）與
+**執行階段**（App 用 HTTPS 連 Auth Center）都會信任。目錄空的話這步是 no-op。
+
+直接用 docker build 的話：
+
+```bash
+docker build \
+    --build-arg HTTPS_PROXY=http://proxy.corp:3128 \
+    --build-arg PIP_INDEX_URL=https://nexus.corp/repository/pypi-proxy/simple \
+    --build-arg PIP_TRUSTED_HOST=nexus.corp \
+    -t sa-rfi-management:latest .
+```
 
 ### 資料庫：SQLite 還是 PostgreSQL
 
@@ -135,6 +170,31 @@ driver（`postgresql+asyncpg://`），不用記得改。
 > 建議先從 SQLite 開始。以這個平台的用量（每週幾十筆 RFI），單一副本綽綽有餘，
 > 而且少一個要顧的元件。之後真的要 HA 再換 PostgreSQL —— 換的時候只有
 > `DATABASE_URL` 這一行要動。
+
+### 從 SQLite 換到 PostgreSQL
+
+先用 SQLite 起步、之後再換 PostgreSQL 是預期中的路徑，附一支搬移腳本
+（會保留原本的 id，所以修改紀錄與附件的關聯不會斷）：
+
+```bash
+# 1. 停掉服務，確保沒人在寫入
+docker compose down
+
+# 2. 從 volume 取出 SQLite 檔
+docker run --rm -v sa-rfi-management_sa-rfi-data:/d -v "$PWD":/out \
+    alpine cp /d/sa_rfi.db /out/sa_rfi.db
+
+# 3. 起好 PostgreSQL（或用下面的 compose override），然後搬移
+uv run python scripts/migrate_sqlite_to_postgres.py \
+    --source ./sa_rfi.db \
+    --target postgresql://sarfi:pw@localhost:5432/sa_rfi
+
+# 4. 在 .env 設好 POSTGRES_PASSWORD，改用 override 檔啟動
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+```
+
+**附件不需要搬** —— 它們一直都在 `DATA_DIR/uploads`，不在資料庫裡，
+換 DB 之後照樣讀得到。腳本會在目標資料庫已有資料時中止，避免不小心搬兩次。
 
 ### 多副本要注意的兩件事
 
@@ -230,10 +290,13 @@ templates/         Jinja2 HTML（list / form / detail / history / dashboard / im
 static/css/style.css   樣式
 static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）
 scripts/backup.py      資料庫備份（SQLite online backup / pg_dump）+ 附件打包
+scripts/migrate_sqlite_to_postgres.py  SQLite → PostgreSQL 資料搬移
 scripts/seed_demo.py   示範資料
 uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
 Dockerfile         多階段建置，非 root 執行
-docker-compose.yml 單機部署（預設 SQLite；--profile postgres 可換 PG）
+docker-compose.yml 單機部署（預設 SQLite）
+docker-compose.postgres.yml  疊上去即改用 PostgreSQL
+certs/             公司自簽 CA（放 .crt 進去，build 與執行階段都會信任）
 deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）
 ```
 
