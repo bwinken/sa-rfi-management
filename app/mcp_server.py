@@ -127,7 +127,9 @@ async def get_rfi(
     )
 )
 async def get_stats(
-    group: Annotated[str, Field(description="week / product / vendor / client / status / owner")] = "week",
+    group: Annotated[
+        str, Field(description="week / product / vendor / client / status / owner")
+    ] = "week",
     year: Annotated[str, Field(description="限定西元年份，如 2026；留空為全部")] = "",
 ) -> dict[str, Any]:
     if group not in DASH_GROUP_LABELS:
