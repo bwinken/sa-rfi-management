@@ -24,8 +24,10 @@ from sqlalchemy import text
 from .database import engine, init_db
 from .log import setup_logging
 from .query import query_string
+from .routes import api as api_routes
 from .routes import exports as exports_routes
 from .routes import rfis as rfis_routes
+from .routes import tokens as tokens_routes
 
 setup_logging()
 
@@ -121,15 +123,22 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # 讓兩個 router 共用同一個 templates 實例
 rfis_routes.templates = templates
 exports_routes.templates = templates
+tokens_routes.templates = templates
 app.include_router(rfis_routes.router)
 app.include_router(exports_routes.router)
+app.include_router(tokens_routes.router)
+# 唯讀 JSON API（/api/v1）—— 認證接受 Auth Center JWT 或個人 API Token
+app.include_router(api_routes.router)
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """瀏覽器導覽遇到 401（未登入/Token 過期）時導向登入頁；
     其餘錯誤在 HTML 情境顯示錯誤頁，API 情境回 JSON。"""
-    accepts_html = "text/html" in request.headers.get("accept", "")
+    accepts_html = (
+        "text/html" in request.headers.get("accept", "")
+        and not request.url.path.startswith("/api/")
+    )
     if exc.status_code == status.HTTP_401_UNAUTHORIZED and accepts_html:
         return RedirectResponse(f"{ROOT}/login", status_code=303)
     if accepts_html:

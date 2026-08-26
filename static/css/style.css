@@ -331,3 +331,10 @@ details.form-card:not([open]) > .section-title::after { content: 'expand_more'; 
 .login-sub { color: var(--ink-soft); font-size: 14px; margin-bottom: 28px; }
 .login-btn { width: 100%; justify-content: center; }
 .login-foot { margin-top: 20px; font-size: 12px; color: #aab2c0; }
+
+/* API Token 顯示 */
+.token-reveal { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.token-reveal code {
+    flex: 1; min-width: 260px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 12px; font-size: 13px; word-break: break-all;
+}

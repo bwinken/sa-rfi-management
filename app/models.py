@@ -96,3 +96,39 @@ class Attachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     rfi: Mapped["Rfi"] = relationship(back_populates="attachments")
+
+
+class ApiToken(Base):
+    """個人 API Token — 供程式化讀取使用。
+
+    Auth Center 的 JWT 只有 12 小時且沒有 refresh，不適合放在腳本或
+    MCP 設定檔裡。這裡讓使用者自行簽發長期有效、可隨時撤銷的唯讀 token：
+    只在建立當下顯示一次，資料庫只存 SHA-256 雜湊。
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 使用者自訂的用途說明，例如「週報自動化腳本」
+    name: Mapped[str] = mapped_column(String(128), default="")
+    # 顯示用的前綴（token 的前幾碼），讓使用者在列表中認得出是哪一支
+    prefix: Mapped[str] = mapped_column(String(16), default="", index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 目前一律為 "read"；寫入操作不開放給 token
+    scopes: Mapped[str] = mapped_column(String(64), default="read")
+
+    owner: Mapped[str] = mapped_column(String(128), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @property
+    def scope_list(self) -> list[str]:
+        return [s for s in self.scopes.split(",") if s]

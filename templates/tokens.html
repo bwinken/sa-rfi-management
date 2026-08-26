@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% set active = 'tokens' %}
+{% block title %}API Token · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="form-page">
+<a class="back-link" href="{{ root }}/rfis">
+    <span class="material-icons-outlined">arrow_back</span>返回列表
+</a>
+<div class="page-head">
+    <div>
+        <h1>API Token</h1>
+        <p class="muted tiny">供腳本、Excel、MCP 等程式化讀取使用。只能讀，不能新增或修改 RFI。</p>
+    </div>
+</div>
+
+{% if error %}<div class="error-banner"><strong>⚠️ {{ error }}</strong></div>{% endif %}
+
+{% if new_token %}
+<div class="result-banner ok">
+    <strong>「{{ new_token_name }}」已建立。</strong>
+    這串完整內容<strong>只會顯示這一次</strong>，關掉就再也看不到了，請先複製保存：
+    <div class="token-reveal">
+        <code id="newToken">{{ new_token }}</code>
+        <button class="btn btn-sm" type="button" id="copyToken">複製</button>
+    </div>
+    <p class="tiny" style="margin-top:8px">
+        用法：<code>curl -H "Authorization: Bearer {{ new_token[:14] }}…" {{ settings.APP_BASE_URL }}/api/v1/rfis</code>
+    </p>
+</div>
+{% endif %}
+
+<div class="form-card">
+    <h3 class="section-title">建立新的 Token</h3>
+    <form method="post" action="{{ root }}/tokens" class="spec-form">
+        <div class="field-row">
+            <label class="field-label" for="name">用途說明 <span class="req">*</span></label>
+            <input type="text" id="name" name="name" maxlength="128" required
+                   placeholder="例：週報自動化腳本、Claude MCP、Excel 樞紐分析">
+            <p class="field-hint">寫清楚給誰用，日後要撤銷時才知道動到誰。</p>
+        </div>
+        <div class="field-row">
+            <label class="field-label" for="expires_days">有效期</label>
+            <select id="expires_days" name="expires_days">
+                {% for d in expiry_choices %}
+                <option value="{{ d }}" {% if d == default_expiry %}selected{% endif %}>
+                    {% if d %}{{ d }} 天{% else %}不設期限{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+            <p class="field-hint">建議設期限。不設期限的 token 一旦外流，只能靠手動撤銷。</p>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit">
+                <span class="material-icons-outlined">key</span> 建立 Token
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="form-card">
+    <h3 class="section-title">我的 Token</h3>
+    {% if tokens %}
+    <div class="table-wrap">
+    <table class="data-table">
+        <thead>
+            <tr><th>用途</th><th>識別碼</th><th>建立</th><th>到期</th><th>最後使用</th><th>狀態</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for t in tokens %}
+        {% set expired = t.expires_at and t.expires_at.replace(tzinfo=None) < now.replace(tzinfo=None) %}
+        <tr>
+            <td><strong>{{ t.name }}</strong></td>
+            <td><code class="tiny">sarfi_{{ t.prefix }}…</code></td>
+            <td class="muted tiny">{{ t.created_at.strftime('%Y-%m-%d') }}</td>
+            <td class="muted tiny">{% if t.expires_at %}{{ t.expires_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}</td>
+            <td class="muted tiny">{% if t.last_used_at %}{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') }}{% else %}未使用過{% endif %}</td>
+            <td>
+                {% if t.revoked_at %}<span class="status-tag" data-status="已結案">已撤銷</span>
+                {% elif expired %}<span class="status-tag" data-status="暫停">已過期</span>
+                {% else %}<span class="status-tag" data-status="已回覆客戶">有效</span>{% endif %}
+            </td>
+            <td>
+                {% if not t.revoked_at %}
+                <form method="post" action="{{ root }}/tokens/{{ t.id }}/revoke"
+                      onsubmit="return confirm('撤銷後使用這支 token 的程式會立刻失效，確定嗎？');">
+                    <button class="btn btn-sm btn-danger" type="submit">撤銷</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">還沒有建立過 token。</p>
+    {% endif %}
+</div>
+
+<div class="form-card">
+    <h3 class="section-title">怎麼用</h3>
+    <p class="field-hint">所有端點都在 <code>{{ settings.APP_BASE_URL }}/api/v1</code>，一律唯讀。</p>
+    <table class="data-table">
+        <thead><tr><th>端點</th><th>用途</th></tr></thead>
+        <tbody>
+            <tr><td><code>GET /api/v1/me</code></td><td>確認憑證有效、看得到哪些權限</td></tr>
+            <tr><td><code>GET /api/v1/rfis</code></td><td>RFI 列表，篩選參數與網頁相同</td></tr>
+            <tr><td><code>GET /api/v1/rfis/{id}</code></td><td>單筆，含完整修改紀錄</td></tr>
+            <tr><td><code>GET /api/v1/filters</code></td><td>各篩選欄位目前可選的值與筆數</td></tr>
+            <tr><td><code>GET /api/v1/stats</code></td><td>Dashboard 統計數字</td></tr>
+            <tr><td><code>GET /api/v1/fields</code></td><td>欄位定義與可選值</td></tr>
+        </tbody>
+    </table>
+    <p class="field-hint" style="margin-top:12px">
+        互動式文件見 <a href="{{ root }}/docs" target="_blank" rel="noopener">/docs</a>。
+        新增與修改 RFI 只能在網頁上做 —— 那樣才會留下修改說明與逐欄位紀錄。
+    </p>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('copyToken')?.addEventListener('click', function () {
+    var el = document.getElementById('newToken');
+    navigator.clipboard.writeText(el.textContent.trim()).then(function () {
+        var b = document.getElementById('copyToken');
+        b.textContent = '已複製';
+        setTimeout(function () { b.textContent = '複製'; }, 1800);
+    });
+});
+</script>
+{% endblock %}

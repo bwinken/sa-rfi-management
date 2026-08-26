@@ -9,18 +9,26 @@
 JWT payload 欄位：sub（員工帳號）、name、org_id、scopes（read/write/admin）。
 """
 
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
 import httpx
 import jwt
-from fastapi import Cookie, Depends, HTTPException, Request, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from .config import settings
 
 COOKIE_NAME = "access_token"
+# 個人 API Token 的前綴，方便在日誌／secret scanning 中辨識
+TOKEN_PREFIX = "sarfi_"
+TOKEN_PREVIEW_LEN = 8
 
 
 @lru_cache
@@ -130,15 +138,88 @@ def _dev_user() -> dict:
     }
 
 
+def _bearer(authorization: str | None) -> str | None:
+    """取出 Authorization: Bearer <token> 的內容。"""
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
+
+
 def optional_user(
     access_token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> dict | None:
-    """取得目前使用者，未登入回傳 None（不丟錯）。"""
+    """取得目前使用者，未登入回傳 None（不丟錯）。
+
+    支援兩種憑證：
+      1. 瀏覽器的 httponly Cookie（網頁介面）
+      2. Authorization: Bearer <Auth Center JWT>（程式化呼叫）
+
+    個人 API Token 走另一條路（需要查資料庫），見 api_principal()。
+    """
     if settings.DEV_AUTH_BYPASS:
         return _dev_user()
-    if not access_token:
+    token = access_token or _bearer(authorization)
+    if not token:
         return None
-    return decode_token(access_token)
+    return decode_token(token)
+
+
+# ── 個人 API Token ────────────────────────────────────────────
+
+def hash_token(raw: str) -> str:
+    """Token 只存雜湊。這是高熵隨機值，不需要 KDF；SHA-256 足夠且快。"""
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def generate_token() -> tuple[str, str, str]:
+    """產生新 token，回傳 (完整token, 前綴預覽, 雜湊)。完整值只會出現這一次。"""
+    raw = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    body = raw[len(TOKEN_PREFIX):]
+    return raw, body[:TOKEN_PREVIEW_LEN], hash_token(raw)
+
+
+async def resolve_api_token(session: "AsyncSession", raw: str) -> dict | None:
+    """驗證個人 API Token，通過則回傳與 JWT 相同形狀的 user dict。"""
+    from .models import ApiToken  # 延後 import，避免與 models 互相載入
+
+    if not raw.startswith(TOKEN_PREFIX):
+        return None
+    row = (await session.execute(
+        select(ApiToken).where(ApiToken.token_hash == hash_token(raw))
+    )).scalar_one_or_none()
+    if row is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if row.revoked_at is not None:
+        logger.warning("已撤銷的 API Token 嘗試存取：{}…（擁有者 {}）", row.prefix, row.owner)
+        return None
+    if row.expires_at is not None:
+        expires = row.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
+            logger.info("已過期的 API Token 嘗試存取：{}…（擁有者 {}）", row.prefix, row.owner)
+            return None
+
+    # 最後使用時間節流更新：每次請求都寫一筆太浪費，5 分鐘內不重複寫
+    last = row.last_used_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is None or (now - last) > timedelta(minutes=5):
+        row.last_used_at = now
+        await session.commit()
+
+    return {
+        "sub": row.owner,
+        "name": f"{row.owner}（API Token：{row.name or row.prefix}）",
+        "org_id": "",
+        "scopes": row.scope_list,
+        "auth": "api_token",
+        "token_id": row.id,
+    }
 
 
 def require_user(user: Annotated[dict | None, Depends(optional_user)]) -> dict:

@@ -100,6 +100,42 @@ uv run python scripts/seed_demo.py           # 寫入 8 筆示範 RFI
 uv run python scripts/seed_demo.py --clear   # 先清空再寫入
 ```
 
+## 唯讀 API
+
+平台提供 `/api/v1` 的 JSON API，**只能讀**。新增與修改一律走網頁介面 ——
+那樣才會留下修改說明與逐欄位紀錄；token 外流的後果也就限縮在「資料被看到」，
+不會變成「資料被竄改」。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /api/v1/me` | 確認憑證有效、看得到哪些權限 |
+| `GET /api/v1/rfis` | RFI 列表，篩選 / 排序參數與網頁完全相同，支援 `limit` / `offset` |
+| `GET /api/v1/rfis/{id}` | 單筆，含完整修改紀錄與附件中繼資料 |
+| `GET /api/v1/filters` | 各篩選欄位目前可選的值與筆數（會依已帶入的條件交叉收斂） |
+| `GET /api/v1/stats` | Dashboard 統計（`group` / `year`） |
+| `GET /api/v1/fields` | 欄位定義與可選值 |
+
+互動式文件在 `/docs`。列表回傳同時給 `values`（原始值，方便運算）與
+`display`（顯示字串，與網頁、投影片上看到的一致）。
+
+### 認證：兩種憑證
+
+```bash
+# 1. Auth Center JWT —— 12 小時效期，適合互動式取得
+curl -H "Authorization: Bearer <JWT>" https://rfi.example.com/api/v1/rfis
+
+# 2. 個人 API Token —— 長期有效、可撤銷，適合腳本與排程
+curl -H "Authorization: Bearer sarfi_xxxxxxxx..." https://rfi.example.com/api/v1/rfis
+```
+
+Auth Center 的 JWT 只有 12 小時而且**沒有 refresh token**，放進腳本或設定檔
+就得天天重貼。所以平台自己提供個人 Token：登入後到 **API Token** 頁面建立，
+指定用途與有效期（預設 90 天，也可不設期限），**完整內容只顯示一次**，
+資料庫只留 SHA-256 雜湊。外流或不用了隨時可以撤銷，撤銷後立即失效。
+
+Token 一律只有 `read` 權限 —— 即使建立者本人有 `write` / `admin`，
+拿 token 去打寫入端點也會被擋（實測回 401）。
+
 ## 容器部署
 
 App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東西。
@@ -286,6 +322,8 @@ app/
   query.py         多選交叉篩選、關鍵字、自然排序（列表與匯出共用同一套規則）
   routes/rfis.py     RFI CRUD、修改紀錄、Dashboard、附件
   routes/exports.py  Excel 匯出 / 匯入、投影片（PPTX）匯出
+  routes/api.py      唯讀 JSON API（/api/v1）
+  routes/tokens.py   個人 API Token 的建立與撤銷
 templates/         Jinja2 HTML（list / form / detail / history / dashboard / import / login / error）
 static/css/style.css   樣式
 static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）
