@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% set active = 'rfis' %}
+{% block title %}{{ rfi.rfi_no }} · SA RFI 管理平台{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ root }}/rfis{% if back %}?{{ back }}{% endif %}">
+    <span class="material-icons-outlined">arrow_back</span>返回列表
+</a>
+<div class="page-head">
+    <div>
+        <h1>{{ rfi.rfi_no }}<span class="status-tag head-tag" data-status="{{ rfi.status }}">{{ rfi.status or '—' }}</span></h1>
+        <p class="muted">{{ rfi.week }} · {{ rfi.client }} · {{ rfi.vendor }}{% if rfi.ic %} · {{ rfi.ic }}{% endif %}</p>
+        <p class="muted tiny last-updated">
+            <span class="material-icons-outlined">history</span>
+            最後更新：{{ rfi.updated_by }} · {{ rfi.updated_at.strftime('%Y-%m-%d %H:%M') }}
+        </p>
+    </div>
+    <div class="head-actions">
+        <a class="btn btn-outline" href="{{ root }}/rfis/{{ rfi.id }}/history">修改紀錄</a>
+        {% if can_write %}<a class="btn btn-primary" href="{{ root }}/rfis/{{ rfi.id }}/edit"><span class="material-icons-outlined">edit</span> 編輯</a>{% endif %}
+        {% if can_admin %}
+        <form method="post" action="{{ root }}/rfis/{{ rfi.id }}/delete"
+              onsubmit="return confirm('確定刪除此 RFI 及其所有紀錄與附件？');">
+            <button class="btn btn-danger" type="submit">刪除</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<div class="detail-layout">
+    <div class="detail-main">
+        {% for group_name, group_fields in field_groups %}
+        <div class="card detail-card">
+            <h3>{{ group_name }}</h3>
+            <table class="kv-table">
+                <tbody>
+                {% for f in group_fields %}
+                    <tr>
+                        <th>{{ f.label }}</th>
+                        <td>
+                            {% if f.key == 'rfi_date' and rfi.week %}
+                                {{ fdisplay(f, rfi.data) or '—' }} <span class="muted tiny">（{{ rfi.week }}）</span>
+                            {% else %}
+                                {{ fdisplay(f, rfi.data) or '—' }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+
+        <div class="card">
+            <h3>附件</h3>
+            {% if rfi.attachments %}
+            <ul class="attach-list">
+                {% for a in rfi.attachments %}
+                <li>
+                    <a href="{{ root }}/attachments/{{ a.id }}" target="_blank" rel="noopener">📎 {{ a.filename }}</a>
+                    <span class="tiny muted">{{ (a.size / 1024) | round(1) }} KB · {{ a.uploaded_by }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted">無附件</p>
+            {% endif %}
+        </div>
+
+        <p class="meta-foot muted tiny">
+            建立者 {{ rfi.created_by }}（{{ rfi.created_at.strftime('%Y-%m-%d %H:%M') }}）
+        </p>
+    </div>
+
+    <aside class="detail-side">
+        <div class="side-card">
+            <div class="side-head">
+                <h3>修改時間綫</h3>
+                <a class="tiny" href="{{ root }}/rfis/{{ rfi.id }}/history">完整紀錄 ›</a>
+            </div>
+            {% if rfi.revisions %}
+            <ul class="mini-timeline">
+                {% for r in rfi.revisions %}
+                {% set badge_cls = {'create': 'badge-create', 'update': 'badge-update', 'attachment': 'badge-attach', 'import': 'badge-import'}.get(r.action, 'badge-update') %}
+                {% set badge_txt = {'create': '建立', 'update': '更新', 'attachment': '附件', 'import': '匯入'}.get(r.action, r.action) %}
+                <li class="mini-rev">
+                    <span class="mini-dot {{ badge_cls }}"></span>
+                    <div class="mini-body">
+                        <div class="mini-top">
+                            <span class="badge {{ badge_cls }}">{{ badge_txt }}</span>
+                            <span class="mini-who">{{ r.edited_by }}</span>
+                        </div>
+                        <div class="mini-time">{{ r.edited_at.strftime('%Y-%m-%d %H:%M') }}</div>
+                        {% if r.note %}<div class="mini-note">{{ r.note }}</div>{% endif %}
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted tiny">尚無修改紀錄。</p>
+            {% endif %}
+        </div>
+    </aside>
+</div>
+{% endblock %}

@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% set active = 'rfis' %}
+{% block title %}RFI 列表 · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <h1>RFI 列表</h1>
+        <p class="muted tiny">共 {{ total }} 筆案件{% if active_filters %}，目前條件下 {{ rows | length }} 筆{% endif %}</p>
+    </div>
+    <div class="head-actions">
+        <a class="btn btn-outline" href="{{ root }}/export/excel?{{ qs_full }}" title="依目前篩選條件匯出">
+            <span class="material-icons-outlined">file_download</span> 匯出 Excel
+        </a>
+        <a class="btn btn-warning" href="{{ root }}/export/pptx?{{ qs_full }}" title="依目前篩選條件產生週報投影片">
+            <span class="material-icons-outlined">slideshow</span> 匯出投影片
+        </a>
+        {% if can_write %}
+        <a class="btn btn-primary" href="{{ root }}/rfis/new">
+            <span class="material-icons-outlined">add</span> 新增 RFI
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+<form class="filter-card" method="get" action="{{ root }}/rfis" id="filterForm">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+
+    <div class="filter-head">
+        <span class="filter-title"><span class="material-icons-outlined">filter_alt</span> 條件篩選</span>
+        <div class="filter-head-right">
+            <label class="search-box">
+                <span class="material-icons-outlined">search</span>
+                <input type="search" name="q" id="q" value="{{ q }}" placeholder="搜尋全欄位關鍵字…" autocomplete="off">
+            </label>
+            <a class="reset-link" href="{{ root }}/rfis">
+                <span class="material-icons-outlined">restart_alt</span> 重設篩選
+            </a>
+        </div>
+    </div>
+
+    <div class="filter-grid">
+        {% for key in filter_keys %}
+        {% set chosen = filters.get(key, []) %}
+        <div class="filter-item" data-key="{{ key }}">
+            <label class="filter-label">{{ filter_labels[key] }}</label>
+            <button type="button" class="filter-btn {% if chosen %}has-selection{% endif %}" data-toggle="{{ key }}">
+                <span class="filter-btn-text">
+                    {% if chosen %}已選 {{ chosen | length }} 個{{ filter_labels[key] }}{% else %}全部{{ filter_labels[key] }}{% endif %}
+                </span>
+                <span class="material-icons-outlined">expand_more</span>
+            </button>
+            <div class="filter-menu" id="menu_{{ key }}" hidden>
+                <div class="filter-menu-head">
+                    <strong>勾選{{ filter_labels[key] }}</strong>
+                    <button type="button" class="link-btn" data-clear="{{ key }}">清除勾選</button>
+                </div>
+                <label class="menu-search">
+                    <span class="material-icons-outlined">search</span>
+                    <input type="text" placeholder="搜尋{{ filter_labels[key] }}…" data-search="{{ key }}" autocomplete="off">
+                </label>
+                <div class="filter-options">
+                    {% for opt in options[key] %}
+                    <label class="filter-option" data-value="{{ opt.value | lower }}">
+                        <input type="checkbox" name="{{ key }}" value="{{ opt.value }}" {% if opt.checked %}checked{% endif %}>
+                        <span class="opt-label">{{ opt.value }}</span>
+                        <span class="opt-count">{{ opt.count }}</span>
+                    </label>
+                    {% else %}
+                    <p class="muted tiny menu-empty">無可選項目</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if active_filters %}
+    <div class="chips">
+        {% if q %}<a class="chip" href="{{ root }}/rfis?{{ qs_without(filters, '', '', '') }}">關鍵字：{{ q }} <span class="material-icons-outlined">close</span></a>{% endif %}
+        {% for key in filter_keys %}{% for val in filters.get(key, []) %}
+        <a class="chip" href="{{ root }}/rfis?{{ qs_without(filters, q, key, val) }}">{{ filter_labels[key] }}：{{ val }} <span class="material-icons-outlined">close</span></a>
+        {% endfor %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <noscript><button class="btn btn-primary btn-sm" type="submit">套用篩選</button></noscript>
+</form>
+
+{% if rows %}
+<div class="table-wrap">
+<table class="data-table rfi-table">
+    <thead>
+        <tr>
+            <th class="col-sticky sortable">
+                <a href="{{ root }}/rfis?{{ qs }}&sort=week&dir={{ 'asc' if sort == 'week' and dir == 'desc' else 'desc' }}">
+                    週別
+                    <span class="material-icons-outlined sort-ico {% if sort == 'week' %}on{% endif %}">{% if sort != 'week' %}unfold_more{% elif dir == 'asc' %}arrow_upward{% else %}arrow_downward{% endif %}</span>
+                </a>
+            </th>
+            {% for f in list_columns %}
+            <th class="sortable {% if f.key in ('notes', 'risk') %}col-wide{% endif %}">
+                <a href="{{ root }}/rfis?{{ qs }}&sort={{ f.key }}&dir={{ 'asc' if sort == f.key and dir == 'desc' else 'desc' }}" title="點擊依 {{ f.label }} 排序">
+                    {{ f.head }}
+                    <span class="material-icons-outlined sort-ico {% if sort == f.key %}on{% endif %}">{% if sort != f.key %}unfold_more{% elif dir == 'asc' %}arrow_upward{% else %}arrow_downward{% endif %}</span>
+                </a>
+            </th>
+            {% endfor %}
+            <th>附件</th>
+            <th>最後更新</th>
+            <th class="col-actions">操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td class="col-sticky">
+                <a href="{{ root }}/rfis/{{ row.obj.id }}?back={{ qs_full | urlencode }}"><strong>{{ row.obj.week or '—' }}</strong></a>
+                <div class="tiny muted">{{ row.obj.rfi_no }}</div>
+            </td>
+            {% for f in list_columns %}
+            <td class="{% if f.key in ('notes', 'risk') %}col-wide{% endif %}">
+                {% if f.key == 'status' %}
+                    <span class="status-tag s-{{ loop.index }}" data-status="{{ row.v.get('status', '') }}">{{ row.v.get('status', '') or '—' }}</span>
+                {% else %}
+                    {{ row.v.get(f.key, '') or '—' }}
+                {% endif %}
+            </td>
+            {% endfor %}
+            <td>{% if row.obj.attachments %}📎 {{ row.obj.attachments | length }}{% else %}—{% endif %}</td>
+            <td class="muted tiny">{{ row.obj.updated_at.strftime('%Y-%m-%d %H:%M') }}<br>{{ row.obj.updated_by }}</td>
+            <td class="col-actions">
+                <a class="icon-btn" href="{{ root }}/rfis/{{ row.obj.id }}?back={{ qs_full | urlencode }}" title="檢視"><span class="material-icons-outlined">visibility</span></a>
+                {% if can_write %}<a class="icon-btn" href="{{ root }}/rfis/{{ row.obj.id }}/edit" title="編輯"><span class="material-icons-outlined">edit</span></a>{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">
+    {% if total %}沒有符合篩選條件的 RFI。<a href="{{ root }}/rfis">清除條件</a>{% else %}目前尚無 RFI 資料。{% if can_write %}<a href="{{ root }}/rfis/new">立即新增一筆</a>，或<a href="{{ root }}/import">從 Excel 匯入</a>。{% endif %}{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="{{ root }}/static/js/filters.js?v={{ asset_ver }}"></script>
+{% endblock %}
