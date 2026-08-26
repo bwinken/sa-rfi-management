@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from .database import engine, init_db
 from .log import setup_logging
+from .mcp_server import build_mcp_app, mcp as mcp_server
 from .query import query_string
 from .routes import api as api_routes
 from .routes import exports as exports_routes
@@ -44,10 +45,15 @@ def _safe_db_url(url: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from contextlib import AsyncExitStack
+    stack = AsyncExitStack()
+    await stack.__aenter__()
     # 先確認狀態目錄可寫，再碰資料庫；volume 沒掛好就直接啟動失敗
     prepare_storage(settings)
     await init_db()
     app.state.http_client = httpx.AsyncClient(timeout=10.0)
+    # MCP 的 session manager 需要自己的 lifespan，掛進主 app 一起啟動
+    await stack.enter_async_context(mcp_server.session_manager.run())
     logger.info(
         "SA RFI 平台啟動 | base_url={} | db={} | data_dir={} | upload_dir={} | dev_bypass={}",
         settings.APP_BASE_URL, _safe_db_url(settings.DATABASE_URL),
@@ -77,6 +83,7 @@ async def lifespan(app: FastAPI):
                 settings.PUBLIC_KEY_PATH,
             )
     yield
+    await stack.aclose()
     await app.state.http_client.aclose()
     logger.info("SA RFI 平台關閉")
 
@@ -129,6 +136,8 @@ app.include_router(exports_routes.router)
 app.include_router(tokens_routes.router)
 # 唯讀 JSON API（/api/v1）—— 認證接受 Auth Center JWT 或個人 API Token
 app.include_router(api_routes.router)
+# MCP server（/mcp）—— 認證用個人 API Token，工具與 API 共用同一套查詢邏輯
+app.mount("/mcp", build_mcp_app())
 
 
 @app.exception_handler(HTTPException)

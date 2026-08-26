@@ -136,6 +136,54 @@ Auth Center 的 JWT 只有 12 小時而且**沒有 refresh token**，放進腳�
 Token 一律只有 `read` 權限 —— 即使建立者本人有 `write` / `admin`，
 拿 token 去打寫入端點也會被擋（實測回 401）。
 
+## MCP server
+
+平台在 `/mcp` 掛了一個 MCP server，讓 Claude 之類的助理可以直接查 RFI ——
+「上週哪些案子還沒回客戶」「BOE 今年送了幾個 OLED NB」這類問題不用自己開網頁篩。
+
+工具（全部唯讀）：
+
+| 工具 | 用途 |
+|---|---|
+| `search_rfis` | 搜尋，篩選條件與網頁完全相同且可多值 |
+| `get_rfi` | 單筆完整內容，含修改紀錄 |
+| `get_stats` | 依週別 / 產品 / 面板廠 / 客戶 / 狀態 / 負責 SA 統計 |
+| `list_filter_values` | 各欄位目前實際有哪些值（讓助理知道能怎麼篩） |
+| `describe_fields` | 欄位定義與可選值 |
+
+**沒有任何寫入工具** —— 不是靠權限擋，是結構上就不存在。新增與修改一律回網頁做，
+才會留下修改說明與逐欄位紀錄。
+
+### 設定方式
+
+先在平台的 **API Token** 頁面建立一支 token，再把它填進 MCP client 設定：
+
+```json
+{
+  "mcpServers": {
+    "sa-rfi": {
+      "type": "http",
+      "url": "https://rfi.example.com/mcp/",
+      "headers": { "Authorization": "Bearer sarfi_xxxxxxxx..." }
+    }
+  }
+}
+```
+
+Token 預設 90 天有效，撤銷後 MCP 立即失效（與 API 共用同一個認證接縫）。
+
+> **為什麼是貼 token，而不是像一般 SSO 那樣點一下就好？**
+> MCP 規範要求授權伺服器支援 OAuth 2.1（PKCE、動態註冊、refresh token）。
+> 目前的 Auth Center 有 OIDC 但缺這三項，且 `redirect_uri` 必須預先註冊成單一值，
+> 所以沒辦法直接當 MCP 的授權伺服器。
+> 個人 Token 是過渡方案：貼一次、90 天不用管、隨時可撤銷。
+>
+> 要做到「完全不用貼」有兩條路：讓 Auth Center 補上那三項標準功能（推薦，
+> 對所有接它的系統都有好處，不只 MCP），或讓本平台自己當授權伺服器
+> （規範允許，但等於多一個要維運的 OAuth 伺服器）。
+> 兩者都不影響現在的設定方式 —— 認證只有 `app/mcp_server.py` 的
+> `TokenAuthMiddleware` 一個接縫，換掉它即可，工具不用動。
+
 ## 容器部署
 
 App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東西。
@@ -324,6 +372,7 @@ app/
   routes/exports.py  Excel 匯出 / 匯入、投影片（PPTX）匯出
   routes/api.py      唯讀 JSON API（/api/v1）
   routes/tokens.py   個人 API Token 的建立與撤銷
+  mcp_server.py      MCP server（/mcp），唯讀工具 + 認證 middleware
 templates/         Jinja2 HTML（list / form / detail / history / dashboard / import / login / error）
 static/css/style.css   樣式
 static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）

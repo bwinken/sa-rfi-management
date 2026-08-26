@@ -3,7 +3,9 @@ name = "sa-rfi-management"
 version = "1.0.0"
 description = "SA RFI 管理平台 — 業務/SA 收集、追蹤、彙整客戶 RFI 並產出週報投影片"
 readme = "README.md"
-requires-python = ">=3.11"
+# 上限 3.14：mcp 在 3.14+ 要求 starlette>=0.48，與目前 pin 的 FastAPI 衝突。
+# 實際建置與部署都是 3.11（見 Dockerfile），這裡如實收斂而不是硬升 FastAPI。
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi[standard]==0.115.6",
     "uvicorn[standard]==0.34.0",
@@ -20,6 +22,8 @@ dependencies = [
     "python-pptx>=1.0.2",
     # PostgreSQL 用的 async driver；DATABASE_URL 指向 SQLite 時不會被載入
     "asyncpg>=0.30.0",
+    # MCP server（掛在同一個 FastAPI app 的 /mcp 底下）
+    "mcp>=2.1.1",
 ]
 
 # 本專案是「應用程式」而非可安裝套件，uv sync 只需建立環境並安裝相依套件
