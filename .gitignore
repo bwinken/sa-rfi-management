@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+# SQLite 資料庫（含各種命名與 journal/WAL 檔）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+sa_rfi.db
+
+# 上傳的實體附件（UPLOAD_DIR 預設 ./uploads）
+uploads/*
+!uploads/.gitkeep
+
+# 日誌
+logs/
+
+# 備份
+backups/
+keys/*.pem
+.DS_Store
+
+# ruff 快取
+.ruff_cache/

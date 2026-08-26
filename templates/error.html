@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="empty error-page">
+    <span class="material-icons-outlined error-ico">error_outline</span>
+    <h1>{{ code }}</h1>
+    <p>{{ detail }}</p>
+    <a class="btn btn-primary" href="{{ root }}/rfis">回 RFI 列表</a>
+</div>
+{% endblock %}

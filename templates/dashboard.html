@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% set active = 'dashboard' %}
+{% block title %}Dashboard · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <h1>RFI 統計看板</h1>
+        <p class="muted tiny">依不同維度彙整目前累積的 RFI 案件</p>
+    </div>
+    <div class="head-actions">
+        <a class="btn btn-outline" href="{{ root }}/dashboard/export?group={{ group }}&year={{ year }}">
+            <span class="material-icons-outlined">file_download</span> 匯出統計 Excel
+        </a>
+        <a class="btn btn-primary" href="{{ root }}/rfis">RFI 列表</a>
+    </div>
+</div>
+
+<div class="stat-grid">
+    <div class="stat-card">
+        <span class="material-icons-outlined stat-ico">fact_check</span>
+        <div><div class="stat-num">{{ total }}</div><div class="stat-label">RFI 總數{% if year %}（{{ year }} 年）{% endif %}</div></div>
+    </div>
+    <div class="stat-card">
+        <span class="material-icons-outlined stat-ico">pending_actions</span>
+        <div><div class="stat-num">{{ open_cases }}</div><div class="stat-label">未結案</div></div>
+    </div>
+    <div class="stat-card">
+        <span class="material-icons-outlined stat-ico">business</span>
+        <div><div class="stat-num">{{ num_clients }}</div><div class="stat-label">終端客戶數</div></div>
+    </div>
+    <div class="stat-card">
+        <span class="material-icons-outlined stat-ico">precision_manufacturing</span>
+        <div><div class="stat-num">{{ num_vendors }}</div><div class="stat-label">面板廠數</div></div>
+    </div>
+    <div class="stat-card">
+        <span class="material-icons-outlined stat-ico">update</span>
+        <div><div class="stat-num">{{ recent }}</div><div class="stat-label">近 30 天更新</div></div>
+    </div>
+</div>
+
+{% if total == 0 %}
+<div class="empty">尚無 RFI 資料。{% if can_write %}<a href="{{ root }}/rfis/new">立即新增一筆</a>{% endif %}</div>
+{% else %}
+<div class="card">
+    <div class="dash-head">
+        <div class="tabs">
+            {% for key, label in groups %}
+            <a class="tab {% if group == key %}on{% endif %}" href="{{ root }}/dashboard?group={{ key }}&year={{ year }}">{{ label }}</a>
+            {% endfor %}
+        </div>
+        <form class="dash-year" method="get" action="{{ root }}/dashboard">
+            <input type="hidden" name="group" value="{{ group }}">
+            <label>年份：</label>
+            <select name="year" onchange="this.form.submit()">
+                <option value="">全部年份</option>
+                {% for y in years %}
+                <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }} 年</option>
+                {% endfor %}
+            </select>
+            <noscript><button class="btn btn-sm" type="submit">套用</button></noscript>
+        </form>
+    </div>
+
+    <div class="chart-body">
+        <div class="pie" style="background: conic-gradient({{ stats.pie.gradient }});"></div>
+        <div class="table-wrap dash-table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>{{ group_label }}</th>
+                        <th class="num">專案總數</th>
+                        <th class="pct-col">占比</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for r in stats.table %}
+                    <tr>
+                        <td>
+                            <span class="legend-dot" style="background: {{ stats.pie.segments[loop.index0].color if loop.index0 < stats.pie.segments | length else '#5f6368' }};"></span>
+                            <strong>{{ r.category }}</strong>
+                        </td>
+                        <td class="num">{{ r.count }} 筆</td>
+                        <td class="pct-col">
+                            <div class="pct-wrap">
+                                <span>{{ r.pct }}%</span>
+                                <div class="bar"><div class="bar-fill" style="width: {{ r.pct }}%"></div></div>
+                            </div>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr><td><strong>合計</strong></td><td class="num"><strong>{{ stats.total }} 筆</strong></td><td class="pct-col">100%</td></tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>處理狀態分佈</h3>
+    <div class="chart-body">
+        <div class="pie" style="background: conic-gradient({{ pie_status.gradient }});"></div>
+        <ul class="legend">
+            {% for s in pie_status.segments %}
+            <li>
+                <span class="legend-dot" style="background: {{ s.color }};"></span>
+                <span class="legend-label">{{ s.label }}</span>
+                <span class="legend-val">{{ s.count }}（{{ s.pct }}%）</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

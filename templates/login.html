@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登入 · SA RFI 管理平台</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%231a73e8'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM8 13h8v2H8v-2zm0 4h8v2H8v-2z'/></svg>">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined">
+    <link rel="stylesheet" href="{{ root }}/static/css/style.css?v={{ asset_ver }}">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="material-icons-outlined topbar-icon">fact_check</span>
+            <span class="topbar-title">SA RFI</span>
+        </div>
+    </header>
+
+    <main class="login-wrap">
+        <div class="login-card">
+            <span class="material-icons-outlined login-logo">lock</span>
+            <h1>登入 SA RFI 管理平台</h1>
+            <p class="login-sub">收集、追蹤客戶 RFI，並一鍵產出週報投影片</p>
+            <a class="btn btn-primary btn-lg login-btn" href="{{ login_url }}">
+                <span class="material-icons-outlined">login</span> 使用 Auth Center 登入
+            </a>
+            <p class="login-foot">Auth Center：{{ settings.AUTH_CENTER_BASE_URL }}</p>
+        </div>
+    </main>
+</body>
+</html>

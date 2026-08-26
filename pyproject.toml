@@ -1,0 +1,25 @@
+[project]
+name = "sa-rfi-management"
+version = "1.0.0"
+description = "SA RFI 管理平台 — 業務/SA 收集、追蹤、彙整客戶 RFI 並產出週報投影片"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "PyJWT[crypto]==2.10.1",
+    "sqlalchemy[asyncio]==2.0.36",
+    "aiosqlite==0.20.0",
+    "python-dotenv==1.0.1",
+    "jinja2==3.1.4",
+    "httpx==0.28.1",
+    "python-multipart==0.0.18",
+    "cryptography==44.0.0",
+    "loguru>=0.7.2",
+    "openpyxl>=3.1.5",
+    "python-pptx>=1.0.2",
+]
+
+# 本專案是「應用程式」而非可安裝套件，uv sync 只需建立環境並安裝相依套件
+[tool.uv]
+package = false

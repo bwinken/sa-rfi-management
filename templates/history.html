@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% set active = 'rfis' %}
+{% block title %}修改紀錄 · {{ rfi.rfi_no }}{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ root }}/rfis/{{ rfi.id }}">
+    <span class="material-icons-outlined">arrow_back</span>返回詳情
+</a>
+<div class="page-head">
+    <div>
+        <h1>修改紀錄</h1>
+        <p class="muted">{{ rfi.rfi_no }} · {{ rfi.client }} · {{ rfi.vendor }}</p>
+    </div>
+</div>
+
+{% if rfi.revisions %}
+<div class="timeline">
+    {% for r in rfi.revisions %}
+    {% set badge_cls = {'create': 'badge-create', 'update': 'badge-update', 'attachment': 'badge-attach', 'import': 'badge-import'}.get(r.action, 'badge-update') %}
+    {% set badge_txt = {'create': '建立', 'update': '更新', 'attachment': '附件', 'import': '匯入'}.get(r.action, r.action) %}
+    <div class="revision">
+        <span class="time-dot"></span>
+        <div class="rev-head">
+            <span class="badge {{ badge_cls }}">{{ badge_txt }}</span>
+            <span class="rev-meta">👤 {{ r.edited_by }} · 🕘 {{ r.edited_at.strftime('%Y-%m-%d %H:%M') }} · v{{ r.version }}</span>
+        </div>
+        {% if r.note %}<p class="rev-note">📝 {{ r.note }}</p>{% endif %}
+        {% if r.changes %}
+        <table class="diff-table">
+            <thead><tr><th>欄位</th><th>原值</th><th>新值</th></tr></thead>
+            <tbody>
+            {% for c in r.changes %}
+                <tr>
+                    <td>{{ c.label }}</td>
+                    <td class="old">{{ c.old or '—' }}</td>
+                    <td class="new">{{ c.new or '—' }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty">尚無修改紀錄。</div>
+{% endif %}
+{% endblock %}

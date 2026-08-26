@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SA RFI 管理平台{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%231a73e8'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM8 13h8v2H8v-2zm0 4h8v2H8v-2z'/></svg>">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined">
+    <link rel="stylesheet" href="{{ root }}/static/css/style.css?v={{ asset_ver }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="material-icons-outlined topbar-icon">fact_check</span>
+            <span class="topbar-title">SA RFI</span>
+        </div>
+        <nav class="topbar-nav">
+            <a href="{{ root }}/rfis" class="topbar-link {% if active == 'rfis' %}active{% endif %}">
+                <span class="material-icons-outlined">list_alt</span> RFI 列表
+            </a>
+            <a href="{{ root }}/dashboard" class="topbar-link {% if active == 'dashboard' %}active{% endif %}">
+                <span class="material-icons-outlined">dashboard</span> Dashboard
+            </a>
+            {% if can_write %}
+            <a href="{{ root }}/rfis/new" class="topbar-link {% if active == 'new' %}active{% endif %}">
+                <span class="material-icons-outlined">add_circle_outline</span> 新增 RFI
+            </a>
+            <a href="{{ root }}/import" class="topbar-link {% if active == 'import' %}active{% endif %}">
+                <span class="material-icons-outlined">upload_file</span> 匯入 Excel
+            </a>
+            {% endif %}
+        </nav>
+        <div class="topbar-right">
+            {% if user %}
+            <span class="topbar-user" title="scopes: {{ user.scopes | join(', ') }}">
+                <span class="material-icons-outlined">account_circle</span>
+                {{ user.name or user.sub }}
+            </span>
+            <a href="{{ root }}/logout" class="topbar-logout" title="登出">
+                <span class="material-icons-outlined">logout</span>
+            </a>
+            {% endif %}
+        </div>
+    </header>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">SA RFI 管理平台{% if settings.DESIGNED_BY %}, Designed by {{ settings.DESIGNED_BY }}{% endif %}{% if settings.EXECUTED_BY %}, Executed by {{ settings.EXECUTED_BY }}{% endif %}</footer>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

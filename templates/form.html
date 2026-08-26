@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% set active = 'new' if mode == 'new' else 'rfis' %}
+{% block title %}{{ '編輯' if mode == 'edit' else '新增' }} RFI · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="form-page">
+<a class="back-link" href="{{ root }}{{ ('/rfis/' ~ rfi.id) if rfi else '/rfis' }}">
+    <span class="material-icons-outlined">arrow_back</span>{{ '返回詳情' if rfi else '返回列表' }}
+</a>
+<div class="page-head">
+    <div>
+        <h1>{{ '編輯 RFI' if mode == 'edit' else '新增 RFI' }}</h1>
+        {% if rfi %}<p class="muted tiny">{{ rfi.rfi_no }} · {{ rfi.week }}</p>{% endif %}
+    </div>
+</div>
+
+{% if conflicts %}
+<div class="conflict-banner">
+    <strong>⚠️ 編輯衝突</strong>：以下欄位在你編輯期間已被其他人更新。請參考最新值調整後再儲存
+    （你未更動的其他欄位已自動保留他人的編輯）。
+    <table class="conflict-table">
+        <thead><tr><th>欄位</th><th>目前最新值（他人）</th><th>你填入的值</th></tr></thead>
+        <tbody>
+        {% for c in conflicts %}
+            <tr><td>{{ c.label }}</td><td>{{ c.theirs or '—' }}</td><td>{{ c.mine or '—' }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="error-banner"><strong>⚠️ {{ error }}</strong></div>
+{% endif %}
+
+<form class="spec-form" method="post"
+      action="{{ root }}{{ '/rfis/' ~ rfi.id ~ '/edit' if mode == 'edit' else '/rfis/new' }}"
+      enctype="multipart/form-data">
+    {% if mode == 'edit' %}
+    <input type="hidden" name="base_version" value="{{ base_version }}">
+    <input type="hidden" name="baseline" value="{{ baseline_json }}">
+    {% endif %}
+
+    {% for group_name, group_fields in field_groups %}
+    <details class="form-card" open>
+        <summary class="section-title">{{ group_name }}</summary>
+        {% for f in group_fields %}
+        <div class="field-row">
+            <label class="field-label" {% if f.type not in ('select', 'resolution') %}for="f_{{ f.key }}"{% endif %}>
+                {{ f.label }}{% if f.required %} <span class="req">*</span>{% endif %}
+                {% if f.info %}<span class="info-tip" tabindex="0" data-tip="{{ f.info }}" title="{{ f.info }}"><span class="material-icons-outlined">info</span></span>{% endif %}
+            </label>
+
+            {% if f.type == 'select' %}
+                <div class="pills">
+                    {% if not f.required %}
+                    <input type="radio" id="{{ f.key }}__none" name="{{ f.key }}" value=""
+                           {% if not values.get(f.key) %}checked{% endif %}>
+                    <label class="pill pill-none" for="{{ f.key }}__none">未填</label>
+                    {% endif %}
+                    {% for opt in f.options %}
+                    <input type="radio" id="{{ f.key }}__{{ loop.index }}" name="{{ f.key }}"
+                           value="{{ opt }}" {% if values.get(f.key) == opt %}checked{% endif %}
+                           {% if f.required %}required{% endif %}>
+                    <label class="pill" for="{{ f.key }}__{{ loop.index }}">{{ opt }}</label>
+                    {% endfor %}
+                </div>
+
+            {% elif f.type == 'resolution' %}
+                <div class="sub-inputs">
+                    {% for sub, sublabel, unit in f.subfields %}
+                    <div class="sub-box">
+                        <span class="sub-label">{{ sublabel }}</span>
+                        <span class="input-unit">
+                            <input type="number" step="1" min="0" name="{{ f.key }}_{{ sub }}"
+                                   value="{{ values.get(f.key, {}).get(sub, '') }}">
+                            {% if unit %}<span class="unit">{{ unit }}</span>{% endif %}
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+
+            {% elif f.type == 'combo' %}
+                <input type="text" id="f_{{ f.key }}" name="{{ f.key }}" list="dl_{{ f.key }}"
+                       value="{{ values.get(f.key, '') }}" placeholder="{{ f.placeholder }}"
+                       autocomplete="off" {% if f.required %}required{% endif %}>
+                <datalist id="dl_{{ f.key }}">
+                    {% for opt in (suggestions.get(f.key) if suggestions else f.options) %}
+                    <option value="{{ opt }}"></option>
+                    {% endfor %}
+                </datalist>
+
+            {% elif f.type == 'textarea' %}
+                <textarea id="f_{{ f.key }}" name="{{ f.key }}" rows="3"
+                          placeholder="{{ f.placeholder }}">{{ values.get(f.key, '') }}</textarea>
+
+            {% elif f.type == 'number' %}
+                <span class="input-unit input-unit-solo">
+                    <input type="number" step="any" min="0" id="f_{{ f.key }}" name="{{ f.key }}"
+                           value="{{ values.get(f.key, '') }}" placeholder="{{ f.placeholder }}"
+                           {% if f.required %}required{% endif %}>
+                    {% if f.unit %}<span class="unit">{{ f.unit }}</span>{% endif %}
+                </span>
+
+            {% elif f.type == 'date' %}
+                <input type="date" id="f_{{ f.key }}" name="{{ f.key }}"
+                       value="{{ values.get(f.key, '') }}" {% if f.required %}required{% endif %}>
+                <p class="field-hint week-hint" id="weekHint"></p>
+
+            {% else %}
+                <input type="text" id="f_{{ f.key }}" name="{{ f.key }}"
+                       value="{{ values.get(f.key, '') }}" placeholder="{{ f.placeholder }}"
+                       {% if f.required %}required{% endif %}>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </details>
+    {% endfor %}
+
+    <details class="form-card" open>
+        <summary class="section-title">附件</summary>
+        <p class="field-hint">客戶 spec、來信截圖、報價單等；支援 PDF / PPTX / XLSX / PNG / JPG，可多選。</p>
+        {% if rfi and rfi.attachments %}
+        <ul class="attach-list">
+            {% for a in rfi.attachments %}
+            <li>
+                <a href="{{ root }}/attachments/{{ a.id }}" target="_blank" rel="noopener">📎 {{ a.filename }}</a>
+                <span class="tiny muted">{{ (a.size / 1024) | round(1) }} KB</span>
+                <button class="btn btn-sm btn-danger" type="submit"
+                        formaction="{{ root }}/attachments/{{ a.id }}/delete" formnovalidate>移除</button>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        <input type="file" name="attachments" multiple accept=".pdf,.pptx,.xlsx,.png,.jpg,.jpeg">
+    </details>
+
+    <details class="form-card" open>
+        <summary class="section-title">本次修改說明{% if mode == 'edit' %} <span class="req">*</span>{% endif %}</summary>
+        <p class="field-hint">
+            請簡述：<strong>①改了哪些欄位 ②原因或依據</strong>（如客戶來信、會議結論、面板廠回覆）。
+            {% if mode == 'edit' %}欄位有變動時必填，會記錄於修改紀錄供他人追溯（僅上傳附件則免填）。{% else %}選填，預設記為「建立 RFI」。{% endif %}
+        </p>
+        <input type="text" id="note" name="note" value="{{ note_value or '' }}" maxlength="200"
+               placeholder="例：依 8/21 客戶來信更新解析度為 2880x1800、狀態改為已回覆客戶">
+    </details>
+
+    <div class="form-actions">
+        <button class="btn btn-primary btn-lg" type="submit">
+            <span class="material-icons-outlined">save</span>
+            {{ '儲存變更' if mode == 'edit' else '建立 RFI' }}
+        </button>
+        <a class="btn btn-outline btn-lg" href="{{ root }}{{ ('/rfis/' ~ rfi.id) if rfi else '/rfis' }}">取消</a>
+    </div>
+</form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+// 日期欄位即時顯示對應週別，讓 SA 一眼確認是不是要的那一週
+(function () {
+    var input = document.getElementById('f_rfi_date');
+    var hint = document.getElementById('weekHint');
+    if (!input || !hint) return;
+    function isoWeek(d) {
+        var t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+        t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+        var start = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+        var week = Math.ceil(((t - start) / 86400000 + 1) / 7);
+        return String(t.getUTCFullYear() % 100).padStart(2, '0') + 'W' + String(week).padStart(2, '0');
+    }
+    function update() {
+        if (!input.value) { hint.textContent = ''; return; }
+        var parts = input.value.split('-');
+        hint.textContent = '對應週別：' + isoWeek(new Date(+parts[0], +parts[1] - 1, +parts[2]));
+    }
+    input.addEventListener('change', update);
+    update();
+})();
+</script>
+{% endblock %}

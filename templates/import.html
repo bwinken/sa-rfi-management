@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set active = 'import' %}
+{% block title %}匯入 Excel · SA RFI 管理平台{% endblock %}
+{% block content %}
+<div class="form-page">
+<a class="back-link" href="{{ root }}/rfis">
+    <span class="material-icons-outlined">arrow_back</span>返回列表
+</a>
+<div class="page-head">
+    <h1>從 Excel 匯入 RFI</h1>
+</div>
+
+{% if error %}<div class="error-banner"><strong>⚠️ {{ error }}</strong></div>{% endif %}
+
+{% if done %}
+<div class="result-banner {% if created %}ok{% else %}warn{% endif %}">
+    <strong>{{ filename }}</strong> 匯入完成：新增 <strong>{{ created }}</strong> 筆{% if skipped %}、略過重複 <strong>{{ skipped }}</strong> 筆{% endif %}。
+    <a href="{{ root }}/rfis">前往 RFI 列表 ›</a>
+</div>
+{% if problems %}
+<div class="card">
+    <h3>匯入提示（{{ problems | length }} 則）</h3>
+    <table class="diff-table">
+        <thead><tr><th style="width:90px">Excel 列</th><th style="width:90px">類型</th><th>說明</th></tr></thead>
+        <tbody>
+        {% for p in problems %}
+            <tr>
+                <td>第 {{ p.line }} 列</td>
+                <td><span class="badge {{ {'error': 'badge-attach', 'warn': 'badge-update', 'skip': 'badge-create'}[p.level] }}">{{ {'error': '未匯入', 'warn': '已修正', 'skip': '已略過'}[p.level] }}</span></td>
+                <td>{{ p.message }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endif %}
+
+<form class="spec-form" method="post" action="{{ root }}/import" enctype="multipart/form-data">
+    <div class="form-card">
+        <h3 class="section-title">選擇檔案</h3>
+        <p class="field-hint">
+            第 1 列須為欄位表頭，可用中文或英文（如「終端客戶 / Client」、「日期 / Date / 週別」）。
+            日期欄位可填 <code>2026-07-13</code> 或 <code>26W29</code>，解析度可填 <code>2560x1600</code>，
+            尺寸與頻率可帶單位（<code>14.0"</code>、<code>60Hz</code>）。
+        </p>
+        <p class="field-hint">
+            不確定格式時，先
+            <a href="{{ root }}/import/template">下載匯入範本</a>，
+            或用列表頁的「匯出 Excel」拿一份現有資料當範例。
+        </p>
+        <input type="file" name="file" accept=".xlsx,.xlsm" required>
+        <label class="check import-check">
+            <input type="checkbox" name="skip_duplicates" value="1" checked>
+            <span>略過重複資料（同週別 + 客戶 + 面板廠 + IC + 代號）</span>
+        </label>
+    </div>
+
+    <div class="form-actions">
+        <button class="btn btn-primary btn-lg" type="submit">
+            <span class="material-icons-outlined">upload_file</span> 開始匯入
+        </button>
+        <a class="btn btn-outline btn-lg" href="{{ root }}/import/template">
+            <span class="material-icons-outlined">file_download</span> 下載範本
+        </a>
+    </div>
+</form>
+</div>
+{% endblock %}

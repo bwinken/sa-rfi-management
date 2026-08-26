@@ -1,1 +1,223 @@
-first commit
+# SA RFI 管理平台
+
+供 SA / 業務登錄、追蹤客戶 RFI（Request For Information），並一鍵產出週報投影片的平台。
+架構與操作邏輯沿用 [ic-spec-platform](https://github.com/bwinken/ic-spec-platform)，
+資料模型與畫面則換成 SA 實際在用的 RFI 欄位。
+
+- **後端**：FastAPI + SQLite（async SQLAlchemy）
+- **前端**：FastAPI 直接以 Jinja2 渲染 HTML（無 SPA）
+- **認證**：[Auth Center](https://github.com/bwinken/authcenter) OAuth2（RS256 JWT）
+
+## 為什麼要從單檔 HTML 換成這個平台
+
+原本的 HTML 雛形已經把「SA 想要什麼」定義得很清楚（多條件篩選、排序、Dashboard、
+匯出投影片），但資料只活在瀏覽器分頁裡：關掉就沒了、兩個人各有一份、也沒有人知道
+某一欄是誰在什麼時候改的。這個平台保留雛形的全部功能，並補上 ic-spec-platform
+已經驗證過的那一半：
+
+| 雛形（單檔 HTML） | 本平台 |
+|---|---|
+| 資料存在記憶體，重整即消失 | SQLite 持久化，附 online backup 腳本 |
+| 誰都能改，改了不留痕跡 | Auth Center SSO + read / write / admin 分級，逐欄位修改紀錄 |
+| 兩人同時編輯 → 後蓋前 | 欄位層級樂觀合併 + 版本鎖，衝突時明確提示 |
+| 篩選只影響畫面 | 篩選條件直接帶進 Excel / 投影片匯出（畫面所見即匯出內容） |
+| 匯入只是往表格塞列 | 匯入會辨識舊表頭、修正選項值、略過重複，並回報每一列的處理結果 |
+| 無附件 | 每筆 RFI 可掛客戶 spec / 來信截圖 / 報價單 |
+
+## 功能
+
+- **RFI 管理**：17 個欄位（下拉 + 可自由輸入的建議清單 + 數字 + 日期 + 解析度複合欄位），
+  日期自動換算成 SA 習慣的週別（`2026-07-13` → `26W29`），案件自動編號（`R26W29-01`）
+- **多條件交叉篩選**：週別 / 產品 / 終端客戶 / 面板廠 / IC 型號 / 尺寸 / 狀態，
+  每個下拉都可搜尋、顯示筆數，且**選項會隨其他條件縮減**（勾了 HP，面板廠只剩 HP 出現過的）；
+  條件在網址上，可直接把連結貼給同事
+- **排序**：任一欄位點標題即排序，數字採自然排序（9.7" 排在 14.0" 前）
+- **共同編輯 + 修改紀錄**：任何具 `write` 權限者皆可編輯；每次變更保留完整版本快照，
+  逐欄位呈現新舊值 diff、修改者、時間與說明
+- **匯出投影片（PPTX）**：一鍵產生 `Customer RFI Collection W29~W35` 週報，16:9、
+  每頁 6 筆、沿用原本的欄序與配色，中文字型一併寫入（Microsoft JhengHei）
+- **匯出 / 匯入 Excel**：匯出沿用當下篩選條件；匯入相容 SA 舊表頭
+  （`日期` / `Date` / `週別`、`面板尺寸`、`頻率`…），可略過重複資料
+- **Dashboard**：依週別 / 產品 / 面板廠 / 終端客戶 / 狀態 / 負責 SA 六個維度統計，
+  含圓餅圖、占比長條與統計 Excel 匯出
+- **附件**：PDF / PPTX / XLSX / PNG / JPG，依「編號_客戶」分資料夾存放
+- **日誌**：以 loguru 記錄登入、RFI 增刪改、匯入匯出、附件操作
+
+## 協作與並行編輯
+
+RFI 常常無法一次填完 —— 建案時只知道客戶與面板廠，規格與評估事項要等後續回覆才補得上。
+平台用**欄位層級的樂觀合併**支援這種協作，並避免「後蓋前」的資料遺失：
+
+1. 開啟編輯頁時，前端會記住當下的整份資料（baseline）與版本號。
+2. 送出時，後端只挑出你**實際改動**的欄位，套用到資料庫**目前最新**的資料上。
+   - 例：A 更新處理狀態、B 同時補風險評估 → 兩人的編輯都會保留，互不覆蓋。
+3. 若你改的欄位在你編輯期間**被別人改成不同值**，會偵測為衝突 → 回傳 409 並重新顯示編輯頁，
+   列出「目前最新值 / 你填入的值」讓你人工確認，未衝突的欄位仍自動保留他人編輯。
+4. 每次成功編輯都會在時間綫留下一筆紀錄（誰、何時、改了哪些欄位的新舊值、為什麼改）。
+
+必填欄位只有「日期 / 終端客戶 / 面板廠 / 產品類別 / 處理狀態」五個，
+所以案子一進來就能先建檔，其餘規格由不同人陸續補齊。
+
+- **權限分級**（沿用 Auth Center 的 scope）：
+  - `read` — 瀏覽列表、詳情、修改紀錄、Dashboard，並匯出 Excel / 投影片
+  - `write` — 新增 / 編輯 RFI、匯入 Excel、上傳 / 刪除附件
+  - `admin` — 刪除整筆 RFI
+
+## 快速開始（uv）
+
+```bash
+uv sync                       # 建立虛擬環境並安裝相依套件
+cp .env.example .env          # 依環境調整
+
+# 開發模式（自動重載）
+uv run fastapi dev app/main.py --port 8003
+
+# 正式模式
+uv run fastapi run app/main.py --port 8003
+```
+
+> FastAPI CLI 需指定 `dev` 或 `run` 子指令；它會自動偵測 `app/main.py` 內的 `app` 物件。
+> 也可用 `uv run uvicorn app.main:app --port 8003`，或傳統 pip：`pip install -r requirements.txt`。
+
+開啟 http://localhost:8003 ，未登入會看到登入頁，點擊後導向 Auth Center 完成 SSO。
+
+### 本機開發（免 Auth Center）
+
+開發前端 / RFI 功能時，可在 `.env` 設定略過認證並注入測試使用者：
+
+```env
+DEV_AUTH_BYPASS=true
+DEV_USER=dev.user
+DEV_SCOPES=read,write,admin   # 調整以測試不同權限
+```
+
+> ⚠️ `DEV_AUTH_BYPASS` 僅限本機，正式環境務必設為 `false`。
+
+想先看看畫面長什麼樣，可灌入示範資料（正式環境請勿執行）：
+
+```bash
+uv run python scripts/seed_demo.py           # 寫入 8 筆示範 RFI
+uv run python scripts/seed_demo.py --clear   # 先清空再寫入
+```
+
+## 與 Auth Center 整合
+
+認證流程與 Auth Center `example_app` 一致：
+
+1. 使用者按登入 → 導向 `{AUTH_CENTER_BASE_URL}/auth/login?app_id=..&redirect_uri=..`
+2. 登入成功 → Auth Center 以 `?code=xxx` 導回 `/auth/callback`
+3. 後端以 `code + client_secret` 向 `/auth/token` 換取 RS256 JWT
+4. JWT 存入 httponly Cookie，後續請求以 Auth Center 公鑰驗證
+   （`audience = APP_ID`、`issuer = AUTH_CENTER_BASE_URL`）
+5. JWT 的 `scopes`（由 Auth Center 的 level 自動映射）決定可執行的操作
+
+### 在 Auth Center 註冊本 App
+
+於 Auth Center 的 `config/apps.yaml` 新增：
+
+```yaml
+sa_rfi_management:
+  name: SA RFI 管理平台
+  client_secret: <bcrypt hash of CLIENT_SECRET>
+  redirect_uri: http://localhost:8003/auth/callback
+  app_url: http://localhost:8003
+  default_level: 1          # 預設給 read；需要 write 的 SA 授 level 2
+  token_expire_hours: 12
+```
+
+驗章公鑰建議走 JWKS（免維護 public.pem）；離線環境則把 Auth Center 的
+`keys/public.pem` 複製到本專案 `keys/public.pem`（路徑由 `PUBLIC_KEY_PATH` 設定）。
+
+授予使用者權限（在 Auth Center 端）：
+
+```bash
+# level 1 → read；level 2 → read+write；level 3 → read+write+admin
+python scripts/manage_permissions.py grant <employee> sa_rfi_management --level 2
+```
+
+## 設定項（.env）
+
+| 變數 | 說明 | 預設 |
+|------|------|------|
+| `APP_BASE_URL` | 本平台對外的 Base URL | `http://localhost:8003` |
+| `ROOT_PATH` | 反向代理子路徑前綴，留空自動由 `APP_BASE_URL` 推導 | （自動） |
+| `AUTH_CENTER_BASE_URL` | Auth Center 位址 | `http://localhost:8000` |
+| `APP_ID` | 在 apps.yaml 註冊的 App ID | `sa_rfi_management` |
+| `CLIENT_SECRET` | App 明文密鑰 | — |
+| `REDIRECT_URI` | OAuth callback，留空自動組出 | （自動） |
+| `JWKS_URL` | 驗章公鑰端點，留空自動推導；設為空字串則停用 | （自動） |
+| `PUBLIC_KEY_PATH` | 離線後備的 RS256 公鑰路徑 | `./keys/public.pem` |
+| `SQLITE_PATH` | SQLite 資料庫檔案 | `./sa_rfi.db` |
+| `UPLOAD_DIR` | 附件目錄 | `./uploads` |
+| `MAX_UPLOAD_MB` | 單檔大小上限 | `25` |
+| `DECK_TITLE` | 匯出投影片的標題（自動接上週別區間） | `Customer RFI Collection` |
+| `COOKIE_SECURE` | Cookie 限定 HTTPS（正式設 true） | `false` |
+| `DESIGNED_BY` / `EXECUTED_BY` | 頁尾署名（留空不顯示） | — |
+| `LOG_LEVEL` / `LOG_FILE` | loguru 等級與輪替檔位置 | `INFO` / `./logs/sa_rfi.log` |
+| `DEV_AUTH_BYPASS` | 略過認證（僅開發） | `false` |
+
+## 專案結構
+
+```
+app/
+  main.py          FastAPI 進入點、認證路由、例外處理
+  config.py        設定（.env）
+  auth.py          Auth Center OAuth 整合、JWT 驗證、scope 守衛
+  database.py      async SQLite engine / session
+  models.py        Rfi / RfiRevision / Attachment
+  fields.py        17 個 RFI 欄位定義 + 週別換算（單一事實來源）
+  query.py         多選交叉篩選、關鍵字、自然排序（列表與匯出共用同一套規則）
+  routes/rfis.py     RFI CRUD、修改紀錄、Dashboard、附件
+  routes/exports.py  Excel 匯出 / 匯入、投影片（PPTX）匯出
+templates/         Jinja2 HTML（list / form / detail / history / dashboard / import / login / error）
+static/css/style.css   樣式
+static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）
+scripts/backup.py      SQLite online backup + 附件打包
+scripts/seed_demo.py   示範資料
+uploads/           附件儲存
+```
+
+## 新增 / 調整 RFI 欄位
+
+所有表單、列表、篩選、Dashboard、匯入匯出與 diff 都從 `app/fields.py` 的
+`RFI_FIELDS` 迭代產生。新增欄位只需在該清單加入一個 `RfiField`
+（指定 `key` / `label` / `type` / `options` / `group`），畫面會自動套用。
+
+若要讓新欄位也出現在列表、投影片或篩選器，再把它的 `key` 加進同檔的
+`LIST_COLUMNS` / `SLIDE_COLUMNS` / `FILTER_KEYS` 即可，毋須改動模板或路由。
+
+> `status`（處理狀態）與 `owner`（負責 SA）是原雛形沒有、為了「追蹤」而加的兩個欄位，
+> Dashboard 的「未結案」統計也建立在 `status` 上。若貴單位不需要，
+> 從 `RFI_FIELDS` 移除該行、並把 `status` 從 `LIST_COLUMNS` / `FILTER_KEYS`
+> 與 `DASH_GROUPS`（`app/routes/rfis.py`）拿掉即可。
+
+## Excel 匯入格式
+
+第 1 列為表頭，中英文皆可辨識（`終端客戶` / `Client`、`日期` / `Date` / `週別`…）。
+不確定格式時，先用平台的「下載匯入範本」，或用列表頁的「匯出 Excel」拿一份現有資料當範例。
+
+匯入時會自動處理：
+
+- 日期：`2026-07-13`、`2026/07/13`、`26W29` 都接受（週別會換算成該週星期一）
+- 尺寸 / 頻率：`14.0"`、`60Hz` 這類帶單位的值會取出數字
+- 解析度：`2560x1600` 會拆成寬 / 高
+- 下拉欄位：`COF 硬性` 之類的寫法會對應到最接近的選項，並在結果頁列出「已修正」
+- 缺必填欄位的列不會匯入，會在結果頁標示是第幾列、缺什麼
+
+## 備份
+
+服務運行中也可安全執行（SQLite online backup API，不需停機）：
+
+```bash
+uv run python scripts/backup.py /data/backups
+# 建議搭配 cron，每日 02:00：
+# 0 2 * * * cd /path/to/sa-rfi-management && .venv/bin/python scripts/backup.py /data/backups
+```
+
+## 部署注意
+
+- 介面的圖示與字型走 Google Fonts（`fonts.googleapis.com`）；與 ic-spec-platform 一致。
+  若部署環境完全不通外網，圖示會退化成文字（如 `expand_more`），
+  此時把 Material Icons 與字型檔自架、改寫 `templates/base.html` 的兩行 `<link>` 即可。
+- 部署在反向代理子路徑時，nginx 請用尾斜線 `proxy_pass` 剝掉前綴，
+  並設定 `APP_BASE_URL`（或 `ROOT_PATH`），模板的內部連結與 cookie 路徑都會跟著調整。
