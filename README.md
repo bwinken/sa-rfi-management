@@ -184,6 +184,35 @@ Token 預設 90 天有效，撤銷後 MCP 立即失效（與 API 共用同一個
 > 兩者都不影響現在的設定方式 —— 認證只有 `app/mcp_server.py` 的
 > `TokenAuthMiddleware` 一個接縫，換掉它即可，工具不用動。
 
+## 測試
+
+```bash
+uv sync                 # 會一併安裝 dev 相依（pytest / ruff）
+uv run pytest           # 190 個測試，約 15 秒
+uv run ruff check app scripts tests
+```
+
+測試涵蓋的重點：
+
+| 檔案 | 內容 |
+|---|---|
+| `test_fields.py` | 週別換算（含 53 週年、跨年）、顯示格式、diff 判定 |
+| `test_query.py` | 篩選、自然排序、交叉篩選選項 |
+| `test_rfi_crud.py` | 建立／編輯／刪除，**欄位層級合併與衝突偵測** |
+| `test_import_export.py` | 舊表頭辨識、值正規化、選項容錯、去重；Excel／PPTX 產出結構 |
+| `test_auth.py` | scope 分級、API Token 的過期／撤銷／唯讀邊界 |
+| `test_api.py` | API 回應形狀、與網頁篩選結果一致、MCP 認證接縫 |
+
+測試會用暫存目錄當 `DATA_DIR`，不會動到你本機的資料。
+預設跑 SQLite；要對 PostgreSQL 跑同一份測試：
+
+```bash
+SA_RFI_TEST_DATABASE_URL=postgresql://user:pw@localhost:5432/sa_rfi_test uv run pytest
+```
+
+CI（`.github/workflows/ci.yml`）會跑：lint、SQLite 測試、**PostgreSQL 測試**、
+SQLite→PostgreSQL 搬移演練、備份腳本、Docker build 與容器就緒檢查。
+
 ## 容器部署
 
 App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東西。
@@ -379,6 +408,8 @@ static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用�
 scripts/backup.py      資料庫備份（SQLite online backup / pg_dump）+ 附件打包
 scripts/migrate_sqlite_to_postgres.py  SQLite → PostgreSQL 資料搬移
 scripts/seed_demo.py   示範資料
+tests/             pytest 測試（190 個）
+.github/workflows/ci.yml  CI
 uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
 Dockerfile         多階段建置，非 root 執行
 docker-compose.yml 單機部署（預設 SQLite）

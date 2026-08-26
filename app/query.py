@@ -110,12 +110,14 @@ def sort_rows(rows: list[RfiRow], sort: str, direction: str) -> list[RfiRow]:
             key=lambda r: (r.obj.rfi_date is not None, r.obj.rfi_date, r.obj.id),
             reverse=True,
         )
-    # 空值一律排在最後（不論升冪或降冪），避免未填欄位干擾閱讀
-    return sorted(
-        rows,
-        key=lambda r: (not r.v.get(sort), natural_key(r.v.get(sort, "")), r.obj.id),
-        reverse=reverse,
-    )
+    # 空值一律排在最後 —— 不論升冪或降冪。
+    # 不能只靠 sorted(reverse=) 加一個「是否為空」的排序鍵：那個鍵也會被
+    # 一起反轉，降冪時空值反而跑到最前面。所以拆成兩堆各自排序再接起來。
+    filled = [r for r in rows if r.v.get(sort)]
+    blank = [r for r in rows if not r.v.get(sort)]
+    filled.sort(key=lambda r: (natural_key(r.v.get(sort, "")), r.obj.id), reverse=reverse)
+    blank.sort(key=lambda r: r.obj.id)
+    return filled + blank
 
 
 def query_string(filters: dict, q: str = "", sort: str = "", direction: str = "",

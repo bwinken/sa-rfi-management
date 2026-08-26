@@ -46,45 +46,50 @@ def _safe_db_url(url: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from contextlib import AsyncExitStack
-    stack = AsyncExitStack()
-    await stack.__aenter__()
+
     # 先確認狀態目錄可寫，再碰資料庫；volume 沒掛好就直接啟動失敗
     prepare_storage(settings)
     await init_db()
-    app.state.http_client = httpx.AsyncClient(timeout=10.0)
-    # MCP 的 session manager 需要自己的 lifespan，掛進主 app 一起啟動
-    await stack.enter_async_context(mcp_server.session_manager.run())
-    logger.info(
-        "SA RFI 平台啟動 | base_url={} | db={} | data_dir={} | upload_dir={} | dev_bypass={}",
-        settings.APP_BASE_URL, _safe_db_url(settings.DATABASE_URL),
-        settings.DATA_DIR, settings.UPLOAD_DIR, settings.DEV_AUTH_BYPASS,
-    )
-    if settings.is_sqlite:
+
+    # 用 async with 包住整段：MCP 的 session manager 內部是 anyio task group，
+    # 進入與離開必須在同一個 task，手動 __aenter__ / aclose 會踩到
+    # "cancel scope in a different task"。
+    async with AsyncExitStack() as stack:
+        app.state.http_client = await stack.enter_async_context(
+            httpx.AsyncClient(timeout=10.0)
+        )
+        if settings.MCP_ENABLED:
+            await stack.enter_async_context(mcp_server.session_manager.run())
         logger.info(
-            "資料庫為 SQLite（{}）—— 只能單一副本執行；要跑多副本請改用 "
-            "PostgreSQL（設定 DATABASE_URL）。", settings.SQLITE_PATH,
+            "SA RFI 平台啟動 | base_url={} | db={} | data_dir={} | upload_dir={} | dev_bypass={}",
+            settings.APP_BASE_URL, _safe_db_url(settings.DATABASE_URL),
+            settings.DATA_DIR, settings.UPLOAD_DIR, settings.DEV_AUTH_BYPASS,
         )
-    if settings.DEV_AUTH_BYPASS:
-        logger.warning(
-            "＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n"
-            "  ⚠️  DEV_AUTH_BYPASS 已開啟：所有人免登入且擁有 {} 權限！\n"
-            "  ⚠️  此模式僅限本機開發，正式環境務必設為 false。\n"
-            "＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝",
-            ",".join(settings.DEV_SCOPES),
-        )
-    else:
-        if settings.jwks_url:
-            logger.info("JWT 驗章將使用 Auth Center JWKS：{}", settings.jwks_url)
-        elif not public_key_available():
-            logger.warning(
-                "未啟用 JWKS 且找不到本地公鑰 {}，SSO 登入將無法驗證 JWT。"
-                "請設定 JWKS_URL/AUTH_CENTER_BASE_URL 以使用 JWKS，"
-                "或複製 public.pem，或本機測試時設定 DEV_AUTH_BYPASS=true。",
-                settings.PUBLIC_KEY_PATH,
+        if settings.is_sqlite:
+            logger.info(
+                "資料庫為 SQLite（{}）—— 只能單一副本執行；要跑多副本請改用 "
+                "PostgreSQL（設定 DATABASE_URL）。", settings.SQLITE_PATH,
             )
-    yield
-    await stack.aclose()
-    await app.state.http_client.aclose()
+        if settings.DEV_AUTH_BYPASS:
+            logger.warning(
+                "＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n"
+                "  ⚠️  DEV_AUTH_BYPASS 已開啟：所有人免登入且擁有 {} 權限！\n"
+                "  ⚠️  此模式僅限本機開發，正式環境務必設為 false。\n"
+                "＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝",
+                ",".join(settings.DEV_SCOPES),
+            )
+        else:
+            if settings.jwks_url:
+                logger.info("JWT 驗章將使用 Auth Center JWKS：{}", settings.jwks_url)
+            elif not public_key_available():
+                logger.warning(
+                    "未啟用 JWKS 且找不到本地公鑰 {}，SSO 登入將無法驗證 JWT。"
+                    "請設定 JWKS_URL/AUTH_CENTER_BASE_URL 以使用 JWKS，"
+                    "或複製 public.pem，或本機測試時設定 DEV_AUTH_BYPASS=true。",
+                    settings.PUBLIC_KEY_PATH,
+                )
+        yield
+
     logger.info("SA RFI 平台關閉")
 
 
@@ -137,7 +142,8 @@ app.include_router(tokens_routes.router)
 # 唯讀 JSON API（/api/v1）—— 認證接受 Auth Center JWT 或個人 API Token
 app.include_router(api_routes.router)
 # MCP server（/mcp）—— 認證用個人 API Token，工具與 API 共用同一套查詢邏輯
-app.mount("/mcp", build_mcp_app())
+if settings.MCP_ENABLED:
+    app.mount("/mcp", build_mcp_app())
 
 
 @app.exception_handler(HTTPException)
