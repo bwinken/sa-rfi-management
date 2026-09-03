@@ -30,3 +30,11 @@ keys/*.pem
 # 公司 CA 憑證由各自環境放入，不進版控
 certs/*.crt
 certs/*.pem
+
+# 每台主機專屬的 compose 設定（由 deploy/2_compose_setup.sh 產生）
+docker-compose.override.yml
+
+# 每台主機專屬、由 deploy/2_compose_setup.sh 產生（範例見 deploy/docker-compose.example.yml）
+docker-compose.yml
+docker-compose.yml.bak.*
+docker-compose.override.yml

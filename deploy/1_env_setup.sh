@@ -16,135 +16,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 
-# ── 輸出樣式 ─────────────────────────────────────────────────────
-if [ -t 1 ]; then
-    B=$'\033[1m'; DIM=$'\033[2m'; CY=$'\033[36m'; YE=$'\033[33m'; RD=$'\033[31m'; GN=$'\033[32m'; NC=$'\033[0m'
-else
-    B=""; DIM=""; CY=""; YE=""; RD=""; GN=""; NC=""
-fi
-section() { printf '\n%s%s── %s ──%s\n' "$B" "$CY" "$1" "$NC"; }
-note()    { printf '%s   %s%s\n' "$DIM" "$1" "$NC"; }
-warn()    { printf '%s%s   ⚠ %s%s\n' "$B" "$YE" "$1" "$NC"; }
-err()     { printf '%s%s   ✗ %s%s\n' "$B" "$RD" "$1" "$NC"; }
-ok()      { printf '%s   ✓ %s%s\n' "$GN" "$1" "$NC"; }
+# shellcheck source=deploy/_lib.sh
+. "$ROOT/deploy/_lib.sh"
 
-# ── 讀既有 .env 當預設值 ─────────────────────────────────────────
-existing() {
-    # existing VAR → 印出既有 .env 裡的值（去掉外層引號），沒有就印空
-    [ -f "$ENV_FILE" ] || return 0
-    local line
-    line="$(grep -E "^[[:space:]]*$1=" "$ENV_FILE" | tail -n1 || true)"
-    [ -n "$line" ] || return 0
-    line="${line#*=}"
-    line="${line%%$'\r'}"
-    case "$line" in
-        \"*\")
-            # 雙引號：去外層引號後還原 quote() 做的跳脫（\\ \" \$），否則重跑會越跳越多
-            line="${line#\"}"; line="${line%\"}"
-            line="${line//\\\$/\$}"; line="${line//\\\"/\"}"; line="${line//\\\\/\\}" ;;
-        \'*\') line="${line#\'}"; line="${line%\'}" ;;
-    esac
-    printf '%s' "$line"
-}
-
-# ── 結果暫存（bash 3.2 相容，不用關聯陣列）───────────────────────
-VAR_NAMES=()
-VAR_VALUES=()
-set_var() {
-    local i
-    for i in "${!VAR_NAMES[@]}"; do
-        if [ "${VAR_NAMES[$i]}" = "$1" ]; then VAR_VALUES[$i]="$2"; return; fi
-    done
-    VAR_NAMES+=("$1"); VAR_VALUES+=("$2")
-}
-get_var() {
-    local i
-    for i in "${!VAR_NAMES[@]}"; do
-        if [ "${VAR_NAMES[$i]}" = "$1" ]; then printf '%s' "${VAR_VALUES[$i]}"; return; fi
-    done
-}
-
-# ── 互動 ─────────────────────────────────────────────────────────
-# ask VAR "說明" "預設" [mode]
-#   mode：plain（可空）| required | url | url_required | bool | secret | int
-ask() {
-    local var="$1" desc="$2" default="$3" mode="${4:-plain}"
-    local prev; prev="$(existing "$var")"
-    [ -n "$prev" ] && default="$prev"
-
-    local value
-    while true; do
-        printf '\n%s%s%s\n' "$B" "$var" "$NC"
-        note "$desc"
-        if [ "$mode" = "secret" ]; then
-            if [ -n "$default" ]; then
-                printf '   輸入（不回顯；直接 Enter 保留現有值）: '
-            else
-                printf '   輸入（不回顯）: '
-            fi
-            IFS= read -r -s value; printf '\n'
-        else
-            if [ -n "$default" ]; then
-                printf '   [%s]: ' "$default"
-            else
-                printf '   : '
-            fi
-            IFS= read -r value
-        fi
-        [ -n "$value" ] || value="$default"
-        # 去頭尾空白
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-
-        case "$mode" in
-            required|url_required|secret)
-                if [ -z "$value" ]; then err "這一項是必填。"; continue; fi ;;
-        esac
-        case "$mode" in
-            url|url_required)
-                if [ -n "$value" ]; then
-                    case "$value" in
-                        http://*|https://*) ;;
-                        *) err "請填完整網址，要以 http:// 或 https:// 開頭。"; continue ;;
-                    esac
-                    value="${value%/}"   # 去尾端斜線（Auth Center 的 iss 也是這樣）
-                fi ;;
-            bool)
-                case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
-                    true|t|yes|y|1)  value="true" ;;
-                    false|f|no|n|0|"") value="false" ;;
-                    *) err "請填 true 或 false。"; continue ;;
-                esac ;;
-            int)
-                case "$value" in
-                    ''|*[!0-9]*) err "請填整數。"; continue ;;
-                esac ;;
-        esac
-        break
-    done
-    set_var "$var" "$value"
-    if [ "$mode" = "secret" ]; then
-        ok "$var = ${value:0:3}…（已隱藏）"
-    else
-        ok "$var = ${value:-（空）}"
-    fi
-}
-
-# yesno "問題" default(y|n) → 回傳 0 表示 yes
-yesno() {
-    local q="$1" def="${2:-n}" ans hint
-    if [ "$def" = "y" ]; then hint="[Y/n]"; else hint="[y/N]"; fi
-    while true; do
-        printf '\n%s%s%s %s ' "$B" "$q" "$NC" "$hint"
-        IFS= read -r ans
-        ans="$(printf '%s' "${ans:-$def}" | tr '[:upper:]' '[:lower:]')"
-        case "$ans" in
-            y|yes) return 0 ;;
-            n|no)  return 1 ;;
-            *) err "請回答 y 或 n。" ;;
-        esac
-    done
-}
+# 既有 .env 的值作為預設
+prev_value() { env_value "$ENV_FILE" "$1"; }
+existing()   { env_value "$ENV_FILE" "$1"; }
 
 # ── 寫檔：值含特殊字元時加引號 ───────────────────────────────────
 quote() {
@@ -258,7 +135,7 @@ if yesno "要用 PostgreSQL 嗎？" n; then
     ask POSTGRES_USER "PostgreSQL 使用者。" "sarfi" required
     ask POSTGRES_DB "資料庫名稱。" "sa_rfi" required
     ask POSTGRES_PASSWORD "PostgreSQL 密碼。" "" secret
-    note "DATABASE_URL 會由 docker-compose.postgres.yml 自動組出，不需要手動填。"
+    note "DATABASE_URL 會由 2_compose_setup.sh 產生的 compose 自動組出，不需要手動填。"
 fi
 set_var DATABASE_URL ""
 
@@ -295,11 +172,11 @@ tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
     printf '\n# ── 開發模式（正式環境保持 false）──\n'
     for v in DEV_AUTH_BYPASS DEV_USER DEV_SCOPES; do emit "$v"; done
     if [ "$USE_PG" = 1 ]; then
-        printf '\n# ── PostgreSQL（啟動時疊 docker-compose.postgres.yml）──\n'
+        printf '\n# ── PostgreSQL（2_compose_setup.sh 第 4 步選 PostgreSQL 才用到）──\n'
         for v in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD; do emit "$v"; done
     fi
     if [ "$USE_PROXY" = 1 ]; then
-        printf '\n# ── 內網 build（build args；執行階段要走 proxy 請疊 deploy/docker-compose.proxy.yml）──\n'
+        printf '\n# ── 內網 build（build args；執行階段要走 proxy 請在 2_compose_setup.sh 第 5 步選 yes）──\n'
         for v in HTTPS_PROXY HTTP_PROXY NO_PROXY PIP_INDEX_URL PIP_TRUSTED_HOST; do emit "$v"; done
     fi
 } > "$tmp"
@@ -315,12 +192,11 @@ sed -E 's/^(CLIENT_SECRET|POSTGRES_PASSWORD)=.*/\1=********/' "$ENV_FILE" | sed 
 section "接下來"
 callback="$(get_var REDIRECT_URI)"; [ -n "$callback" ] || callback="$(get_var APP_BASE_URL)/auth/callback"
 printf '   1. 到 Auth Center 確認 app_id=%s 的 redirect_uri 是：%s%s%s\n' "$(get_var APP_ID)" "$B" "$callback" "$NC"
-compose_files="-f docker-compose.yml"
-[ "$USE_PG" = 1 ] && compose_files="$compose_files -f docker-compose.postgres.yml"
-printf '   2. docker compose %s build\n' "$compose_files"
-printf '   3. docker compose %s up -d\n' "$compose_files"
-printf '   4. curl -s %s/readyz   # 應回 {"status":"ok",...}\n' "http://localhost:8003"
-if [ "$USE_PROXY" = 1 ]; then
-    printf '\n   執行階段（容器連 Auth Center）也要走 proxy 的話，再多疊 -f deploy/docker-compose.proxy.yml\n'
+printf '   2. bash deploy/2_compose_setup.sh   # 產生 docker-compose.yml（埠、資料位置、PostgreSQL、執行階段 proxy）\n'
+printf '   3. docker compose build\n'
+printf '   4. docker compose up -d\n'
+printf '   5. curl -s http://localhost:8003/readyz   # 應回 {"status":"ok",...}\n'
+if [ "$USE_PG" = 1 ]; then
+    printf '\n   你選了 PostgreSQL：第 2 步的第 4 題記得也選 PostgreSQL，db 服務才會一起起來。\n'
 fi
 printf '\n   詳細說明：deploy/README.md\n\n'

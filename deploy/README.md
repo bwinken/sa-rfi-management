@@ -21,7 +21,8 @@
 
 > 常見誤解：compose 的 `.env` **只用來代換 `${...}`**，不會自動變成容器的環境變數。
 > 所以每一個要進容器的變數都要在 `docker-compose.yml` 的 `environment:` 列出來，
-> 這份 repo 已經把 `.env.example` 裡的變數全部對應好；新增設定時兩邊要一起加。
+> `2_compose_setup.sh` 產生的檔案已把 `.env.example` 裡的變數全部對應好；
+> 日後新增設定時，`.env.example` 與腳本的 `render()` 要一起加。
 
 ---
 
@@ -57,13 +58,29 @@ python scripts/manage_permissions.py grant <員工帳號> sa_rfi_management --le
 git clone <repo> && cd sa-rfi-management
 cp /path/to/corp-root-ca.crt certs/   # 內網 proxy 會攔 TLS 的話（見第 3 節）
 bash deploy/1_env_setup.sh            # 逐項問你、產生 .env（必填沒填會一直問）
-docker compose build                  # 內網一定要走 proxy，腳本會問
+bash deploy/2_compose_setup.sh        # 問這台主機的埠 / 資料位置 / DB / proxy，產生 docker-compose.yml
+docker compose build                  # 內網一定要走 proxy，第一支腳本會問
 docker compose up -d
 docker compose logs -f app            # 看到「SA RFI 平台啟動」即可
 ```
 
-不想用互動腳本的話：`cp deploy/.env.example .env` 手動填（正式環境版範本；
-根目錄的 `.env.example` 是開發用）。腳本可以重複執行，既有值會當預設，直接 Enter 保留。
+兩支腳本都可以重複執行，上次的值會當預設，直接 Enter 保留。
+不想用互動腳本：`cp deploy/.env.example .env`、`cp deploy/docker-compose.example.yml docker-compose.yml`
+後手動改（`.env.example` 是正式環境版範本；根目錄那份是開發用）。
+
+### `docker-compose.yml` 是產生的，不在 git 裡
+
+repo **不附** `docker-compose.yml`——每台主機不一樣的東西（對外埠、資料放 volume 還是
+主機目錄、要不要 PostgreSQL、容器連 Auth Center 是否走 proxy、本機 build 還是 registry 的 image）
+由 `2_compose_setup.sh` 問完後產生一份**完整、自給自足**的檔案，已在 `.gitignore`，
+`git pull` 升級不會衝突。腳本會：
+
+- 偵測到既有 `docker-compose.yml`：本腳本產生的 → 上次選擇當預設；不是的 → 先備份成 `.bak.<時間>` 再寫
+- 偵測到同目錄有 `compose.yaml` / `compose.yml`（docker compose 會優先讀它們）或 override 檔 → 警示
+- 產生後跑 `docker compose config` 驗證，`.env` 缺必填值會直接指出
+
+手動編輯過產生的檔案後，重跑腳本會以你的選擇重新產生（手改的部分要自己加回去），
+所以偏好「改完就重跑」而不是手改。
 
 驗證：
 
@@ -142,13 +159,8 @@ docker compose build
 
 上面的 `HTTPS_PROXY` **只用在 build**，刻意不帶進執行階段——
 否則容器對內網 Auth Center 的請求也會被導去 proxy。
-若你的網路拓樸真的需要，疊上這個 override：
-
-```bash
-docker compose -f docker-compose.yml -f deploy/docker-compose.proxy.yml up -d
-```
-
-它會把 `.env` 裡的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 帶進容器。
+若你的網路拓樸真的需要，重跑 `bash deploy/2_compose_setup.sh`，第 5 步選 `yes`，
+然後 `docker compose up -d`。它會把 `.env` 裡的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 帶進容器。
 **務必**把 Auth Center 的主機名放進 `NO_PROXY`（除非它就是要走 proxy 才到得了）。
 
 ---
@@ -231,13 +243,13 @@ docker compose up -d
 docker compose down
 # 取出 SQLite 檔
 docker run --rm -v sa-rfi-management_sa-rfi-data:/d -v "$PWD":/out alpine cp /d/sa_rfi.db /out/sa_rfi.db
-# .env 加上 POSTGRES_PASSWORD=...，先只起 db
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d db
+# 重跑兩支腳本：1_env_setup 第 5 步設 POSTGRES_PASSWORD、2_compose_setup 第 4 步選 PostgreSQL
+bash deploy/1_env_setup.sh && bash deploy/2_compose_setup.sh
+docker compose up -d db          # 先只起資料庫
 # 搬資料（保留 id，修改紀錄與附件關聯不會斷）
 uv run python scripts/migrate_sqlite_to_postgres.py --source ./sa_rfi.db \
     --target postgresql://sarfi:<密碼>@localhost:5432/sa_rfi
-# 之後固定用兩個 -f 啟動
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+docker compose up -d             # 之後就是一般的 up
 ```
 
 多副本另外要注意：附件目錄必須是共用儲存（NFS 等），`ASSET_VERSION` 必須固定。
@@ -293,11 +305,12 @@ location / {
 
 | 檔案 | 用途 |
 |---|---|
-| `docker-compose.yml`（根目錄） | 主組態：單副本 + SQLite + volume |
-| `docker-compose.postgres.yml`（根目錄） | override：加上 PostgreSQL 服務 |
+| `docker-compose.yml`（根目錄，**不進 git**） | 由 `2_compose_setup.sh` 產生的完整 compose 設定 |
 | `deploy/1_env_setup.sh` | 互動式逐項產生 `.env` |
+| `deploy/2_compose_setup.sh` | 互動式產生這台主機的 `docker-compose.yml` |
+| `deploy/docker-compose.example.yml` | 腳本以預設選項產生的範例，手動部署可複製到根目錄 |
+| `deploy/_lib.sh` | 上面兩支共用的互動函式 |
 | `deploy/.env.example` | 正式環境版 `.env` 範本 |
-| `deploy/docker-compose.proxy.yml` | override：執行階段走 proxy |
 | `deploy/kubernetes.yaml` | K8s 範例（PVC、Secret、probes、fsGroup） |
 | `.env.example`（根目錄） | 所有變數與說明 |
 | `certs/` | 公司 CA（build 時裝進 image） |
