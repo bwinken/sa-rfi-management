@@ -1,28 +1,30 @@
 # 部署手冊：docker compose（stateless container + `.env`）
 
-本平台的容器是 **stateless** 的：image 裡沒有任何設定值、金鑰或資料，
-所有環境差異都靠**環境變數**注入，所有要留存的東西都寫在**一個 volume**。
-部署、升級、搬機器都只有三件東西要管：
+一支腳本問完所有設定，產生 `.env` 與 `docker-compose.yml`，然後 `build` + `up`：
 
-| 東西 | 放哪裡 | 進不進 image |
-|---|---|---|
-| 設定（URL、secret…） | `.env` → compose 代換 → 容器環境變數 | ❌（`.dockerignore` 排除） |
-| 狀態（SQLite 檔、附件、離線公鑰） | 具名 volume `sa-rfi-data` → 容器內 `/data` | ❌ |
-| 程式 | image `sa-rfi-management:<tag>` | ✅ 只有這個 |
-
-```
-.env ──(docker compose 讀取，代換 ${VAR:-預設})──▶ docker-compose.yml environment:
-                                                          │
-                                                          ▼
-                                              容器（只認環境變數，找不到 .env）
-                                                          │
-                                                 /data ◀──┴── volume sa-rfi-data
+```bash
+git clone <repo> && cd sa-rfi-management
+cp /path/to/corp-root-ca.crt certs/   # proxy 會攔 TLS、或 PyPI 鏡像用公司 CA 的話（見第 3 節）
+bash deploy/setup.sh                  # 逐項問你（見第 2 節）
+docker compose build                  # ⚠ 內網一定要 proxy + trusted host，見第 3 節
+docker compose up -d
+docker compose logs -f app            # 看到「SA RFI 平台啟動」即可
+curl -s http://127.0.0.1:8003/readyz  # {"status":"ok",...}
 ```
 
-> 常見誤解：compose 的 `.env` **只用來代換 `${...}`**，不會自動變成容器的環境變數。
-> 所以每一個要進容器的變數都要在 `docker-compose.yml` 的 `environment:` 列出來，
-> `2_compose_setup.sh` 產生的檔案已把 `.env.example` 裡的變數全部對應好；
-> 日後新增設定時，`.env.example` 與腳本的 `render()` 要一起加。
+## 目錄
+
+0. [前置：在 Auth Center 註冊](#0-前置在-auth-center-註冊本平台)
+1. [這個平台怎麼部署：stateless + `.env`](#1-stateless-container--env)
+2. [`deploy/setup.sh` 會問什麼](#2-deploysetupsh-會問什麼)
+3. [**`docker compose build` 注意：proxy 與 trusted host**](#3-docker-compose-build-注意proxy-與-trusted-host)
+4. [執行階段的 proxy](#4-執行階段的-proxy)
+5. [離線驗章公鑰](#5-容器連不到-auth-center-時離線驗章公鑰)
+6. [升級](#6-升級)
+7. [備份與還原](#7-備份與還原)
+8. [換成 PostgreSQL](#8-換成-postgresql)
+9. [反向代理](#9-反向代理)
+10. [故障排除](#10-故障排除)
 
 ---
 
@@ -35,7 +37,7 @@ apps:
   - app_id: sa_rfi_management
     name: SA RFI 管理平台
     client_secret: <bcrypt hash>            # Admin UI 會自動產生並顯示明文一次
-    redirect_uri: https://rfi.corp.example/auth/callback   # 逐字比對，必須與下方 APP_BASE_URL 對應
+    redirect_uri: https://rfi.corp.example/auth/callback   # 逐字比對，必須與 APP_BASE_URL 對應
     app_url: https://rfi.corp.example
     allowed_orgs: ["<SA 部門 org_id>"]      # default_level 只在這裡非空時生效
     default_level: 1                        # 組織內預設 read
@@ -48,139 +50,143 @@ apps:
 python scripts/manage_permissions.py grant <員工帳號> sa_rfi_management --level 2   # level 3 = admin
 ```
 
-記下 **明文 client_secret**，下一步要填。
+記下 **明文 client_secret**，跑 `setup.sh` 時要填。
 
 ---
 
-## 1. 第一次部署
+## 1. Stateless container + `.env`
 
-```bash
-git clone <repo> && cd sa-rfi-management
-cp /path/to/corp-root-ca.crt certs/   # 內網 proxy 會攔 TLS 的話（見第 3 節）
-bash deploy/1_env_setup.sh            # 逐項問你、產生 .env（必填沒填會一直問）
-bash deploy/2_compose_setup.sh        # 問這台主機的埠 / 資料位置 / DB / proxy，產生 docker-compose.yml
-docker compose build                  # 內網一定要走 proxy，第一支腳本會問
-docker compose up -d
-docker compose logs -f app            # 看到「SA RFI 平台啟動」即可
-```
+容器裡沒有任何設定值、金鑰或資料。部署、升級、搬機器只有三件東西要管：
 
-兩支腳本都可以重複執行，上次的值會當預設，直接 Enter 保留。
-不想用互動腳本：`cp deploy/.env.example .env`、`cp deploy/docker-compose.example.yml docker-compose.yml`
-後手動改（`.env.example` 是正式環境版範本；根目錄那份是開發用）。
-
-### `docker-compose.yml` 是產生的，不在 git 裡
-
-repo **不附** `docker-compose.yml`——每台主機不一樣的東西（對外埠、資料放 volume 還是
-主機目錄、要不要 PostgreSQL、容器連 Auth Center 是否走 proxy、本機 build 還是 registry 的 image）
-由 `2_compose_setup.sh` 問完後產生一份**完整、自給自足**的檔案，已在 `.gitignore`，
-`git pull` 升級不會衝突。腳本會：
-
-- 偵測到既有 `docker-compose.yml`：本腳本產生的 → 上次選擇當預設；不是的 → 先備份成 `.bak.<時間>` 再寫
-- 偵測到同目錄有 `compose.yaml` / `compose.yml`（docker compose 會優先讀它們）或 override 檔 → 警示
-- 產生後跑 `docker compose config` 驗證，`.env` 缺必填值會直接指出
-
-手動編輯過產生的檔案後，重跑腳本會以你的選擇重新產生（手改的部分要自己加回去），
-所以偏好「改完就重跑」而不是手改。
-
-驗證：
-
-```bash
-curl -s http://localhost:8003/readyz
-# {"status":"ok","checks":{"database":"ok","data_dir":"ok"}}
-```
-
-瀏覽器開 `APP_BASE_URL` → 應被導到 Auth Center 登入頁 → 登入後回到 RFI 列表。
-沒有被導去 Auth Center、直接看到列表，代表 `DEV_AUTH_BYPASS` 沒關，立刻檢查 `.env`。
-
----
-
-## 2. `.env` 要填什麼
-
-### 正式環境最少要填的 5 個
-
-```env
-APP_BASE_URL=https://rfi.corp.example          # 本平台對外網址（OAuth callback 由此組出）
-AUTH_CENTER_BASE_URL=https://auth.corp.example  # 尾端不要加 /
-CLIENT_SECRET=<Auth Center 給的明文 secret>
-COOKIE_SECURE=true                              # 走 HTTPS 一律 true
-ASSET_VERSION=<image tag 或 commit sha>         # 讓靜態資源快取跟著版本走
-```
-
-### 有合理預設、通常不用動
-
-| 變數 | 預設 | 什麼時候要改 |
+| 東西 | 放哪裡 | 進不進 image |
 |---|---|---|
-| `APP_ID` | `sa_rfi_management` | Auth Center 用了別的 app_id |
-| `REDIRECT_URI` | `{APP_BASE_URL}/auth/callback` | 幾乎不用；改了 Auth Center 那邊要同步 |
-| `JWKS_URL` | `{AUTH_CENTER_BASE_URL}/.well-known/jwks.json` | 容器連不到 Auth Center → 填 `off`，改用離線公鑰（第 5 節） |
-| `PUBLIC_KEY_PATH` | `/data/keys/public.pem` | 幾乎不用 |
-| `ROOT_PATH` | 由 `APP_BASE_URL` 的路徑推導 | 幾乎不用 |
-| `DATABASE_URL` | 空 = SQLite 在 `/data/sa_rfi.db` | 換 PostgreSQL（第 8 節） |
-| `MAX_UPLOAD_MB` | `25` | 附件太大被擋 |
-| `DECK_TITLE` | `Customer RFI Collection` | 週報標題要改 |
-| `DESIGNED_BY` / `EXECUTED_BY` | 空 | 頁尾要署名 |
-| `LOG_LEVEL` | `INFO` | 排查問題時改 `DEBUG` |
+| 設定（URL、secret、proxy…） | `.env` → compose 代換 → 容器環境變數 | ❌（`.dockerignore` 排除） |
+| 狀態（SQLite 檔、附件、離線公鑰） | volume 或主機目錄 → 容器內 `/data` | ❌ |
+| 程式 | image `sa-rfi-management:<tag>` | ✅ 只有這個 |
 
-### 絕對不要在正式環境設的
-
-```env
-DEV_AUTH_BYPASS=true    # 略過認證，任何人都是 admin
+```
+.env ──(docker compose 代換 ${VAR:-預設})──▶ docker-compose.yml ──▶ 容器（只認環境變數，找不到 .env）
+                                                                          │
+                                                                    /data ◀┴── volume sa-rfi-data
 ```
 
-預設是 `false`，不寫就是安全的。只在 Auth Center 還沒接好、想先看畫面時暫時打開。
+> compose 的 `.env` **只用來代換 `${...}`**，不會自動變成容器的環境變數，所以每個要進容器的變數
+> 都得列在 `docker-compose.yml` 的 `environment:`。`setup.sh` 產生的檔案已全部對應好；
+> 日後新增設定時，`.env.example` 與 `setup.sh` 的 `render()` 要一起加。
+
+**`.env` 與 `docker-compose.yml` 都不在 git 裡**（`.gitignore`），由 `setup.sh` 產生；
+`git pull` 升級不會衝突。想手動寫的話，範本在 `deploy/.env.example` 與 `deploy/docker-compose.example.yml`。
 
 ---
 
-## 3. 內網 build：proxy / 私有 PyPI / 公司 CA（內網必做）
+## 2. `deploy/setup.sh` 會問什麼
 
-build 要下載套件，內網環境**一定要設 proxy**，否則 `docker compose build` 會卡在 `uv sync`。
-這些是 **build args**，寫在 `.env` 裡 `docker compose build` 會自動帶入，不需要改 Dockerfile
-（`1_env_setup.sh` 第 6 步會問，`HTTPS_PROXY` 為必填）：
+```bash
+bash deploy/setup.sh                 # 全部：A（.env）→ B（docker-compose.yml）
+bash deploy/setup.sh --env-only      # 只重做 .env：改網址、換 secret、改 proxy
+bash deploy/setup.sh --compose-only  # 只重做 docker-compose.yml：改埠、資料位置、DB
+```
+
+直接 Enter 採用方括號裡的預設；必填沒填會一直問。**重跑時上次的值就是預設**，一路 Enter 即保留
+（secret 也是，輸入不回顯）。Ctrl-C 隨時中止，不會寫任何東西。
+
+### A. `.env`
+
+| 步驟 | 問什麼 | 備註 |
+|---|---|---|
+| A1 必填 | `APP_BASE_URL`、`AUTH_CENTER_BASE_URL`、`APP_ID`、`CLIENT_SECRET`、`COOKIE_SECURE`、`ASSET_VERSION` | URL 會去尾端 `/`；`COOKIE_SECURE` 依 https 自動預設；`ASSET_VERSION` 預設 commit sha |
+| A2 認證進階 | `REDIRECT_URI`、`JWKS_URL`、`PUBLIC_KEY_PATH` | 預設跳過；離線環境才需要（第 5 節） |
+| A3 應用設定 | 上傳上限、投影片標題、頁尾署名、log 等級 | 預設跳過 |
+| A4 開發模式 | `DEV_AUTH_BYPASS` | 選 `true` 會再確認一次；正式環境務必 `false` |
+| A5 資料庫 | 要不要 PostgreSQL → 帳號、DB 名、密碼 | 預設 SQLite |
+| **A6 build** | **proxy、`NO_PROXY`、PyPI 鏡像、trusted host** | **內網必填，見第 3 節** |
+
+產出 `.env`（權限 600）。
+
+### B. `docker-compose.yml`
+
+| 步驟 | 問什麼 | 選項 |
+|---|---|---|
+| B1 對外埠 | 埠號、開給誰連 | `0.0.0.0` 直連 / `127.0.0.1` 只給本機反向代理 |
+| B2 image 來源 | 這台 build / 從 registry 拉 | registry 需給完整 image 名 |
+| B3 資料放哪 | 容器 `/data` 對應到 | 具名 volume / 主機目錄（會幫你 `mkdir` + `chown 10001`） |
+| B4 資料庫 | SQLite / PostgreSQL | 選 PostgreSQL 會在同一份 compose 多起 `db` 服務；預設跟著 A5 |
+| B5 執行階段 proxy | 容器連 Auth Center 要不要走 proxy | 預設不用（第 4 節） |
+
+產生一份**完整、自給自足**的 `docker-compose.yml`（含 healthcheck、日誌輪替 10MB×5）。
+偵測到既有檔案才警示：本腳本產生的 → 沿用上次選擇；不是的 → 先備份成 `.bak.<時間>`。
+同目錄有 `compose.yaml`（docker compose 會優先讀它）或 override 檔也會警示。
+
+### 結尾
+
+- 列出 `.env`（secret 遮罩）與 compose 的選擇
+- **列出 `docker compose build` 會帶入的 proxy / PyPI / trusted host / CA**，一眼確認
+- 跑 `docker compose config` 驗證；`.env` 缺必填會直接指出是哪個
+- 印出接下來的指令與要去 Auth Center 核對的 `redirect_uri`
+
+---
+
+## 3. `docker compose build` 注意：proxy 與 trusted host
+
+build 要下載 Python 套件（`pip install uv` → `uv sync`）。內網環境**兩件事都要設**，否則卡在下載：
+
+| 要設什麼 | `.env` 變數 | 什麼情況需要 |
+|---|---|---|
+| **proxy** | `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` | 出不去的內網一定要 |
+| **PyPI 鏡像** | `PIP_INDEX_URL` | 有 Nexus / Artifactory 就填；沒有就留空走官方 PyPI 經 proxy |
+| **trusted host** | `PIP_TRUSTED_HOST` | 鏡像用**自簽憑證**時填鏡像主機名（只填主機名、一個）。會同時給 `pip --trusted-host` 與 `uv --allow-insecure-host` |
+| 公司 CA | `certs/*.crt` | proxy 會**攔截 TLS**、或鏡像用公司內部 CA 簽的憑證。放進去後 build 與執行階段都信任，通常就不需要 trusted host |
+
+`setup.sh` A6 會逐項問，`PIP_TRUSTED_HOST` 預設帶鏡像主機名；結尾會列出實際會帶入的值。
+手寫的話 `.env` 長這樣：
 
 ```env
 HTTPS_PROXY=http://proxy.corp:3128
 HTTP_PROXY=http://proxy.corp:3128
-NO_PROXY=localhost,127.0.0.1,.corp
+NO_PROXY=localhost,127.0.0.1,auth.corp.example
 PIP_INDEX_URL=https://nexus.corp/repository/pypi-proxy/simple
 PIP_TRUSTED_HOST=nexus.corp
 ```
 
-公司自簽 / 攔截式 proxy 的 CA 憑證（PEM 格式、副檔名 `.crt`）放到 `certs/`，
-build 時會裝進 image 的系統信任清單；**執行階段** App 連 Auth Center 也會信任它。
+這些是 **build args**（`docker-compose.yml` 的 `build.args`），`docker compose build` 自動帶入，
+**不會**進到執行中的容器（執行階段要不要走 proxy是 B5 另外決定的）。
 
-```bash
-cp /path/to/corp-root-ca.crt certs/
-docker compose build
-```
+判斷方式：
+
+- build 卡在 `pip install` / `uv sync` 沒有進度 → 沒有 proxy
+- `certificate verify failed` / `SSL: CERTIFICATE_VERIFY_FAILED` → 鏡像或 proxy 的憑證不被信任：放 CA 進 `certs/`（正解），或設 `PIP_TRUSTED_HOST`（略過驗證）
+- `403` / `401` 從鏡像回來 → `PIP_INDEX_URL` 路徑不對，或鏡像要帳密（`https://user:pw@nexus.corp/...`）
+
+> 注意：主機 shell 若已 `export HTTPS_PROXY`，compose 代換時 **shell 環境變數優先於 `.env`**。
+> 兩者通常相同所以沒事；build 行為不如預期時先 `env | grep -i proxy`。
 
 ---
 
-## 4. 執行階段的 proxy（只有容器連 Auth Center 要走 proxy 時）
+## 4. 執行階段的 proxy
 
-上面的 `HTTPS_PROXY` **只用在 build**，刻意不帶進執行階段——
+容器執行時只會對外連一個地方：**Auth Center**（換 token、抓 JWKS）。第 3 節的 proxy 刻意**只用在 build**，
 否則容器對內網 Auth Center 的請求也會被導去 proxy。
-若你的網路拓樸真的需要，重跑 `bash deploy/2_compose_setup.sh`，第 5 步選 `yes`，
-然後 `docker compose up -d`。它會把 `.env` 裡的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 帶進容器。
-**務必**把 Auth Center 的主機名放進 `NO_PROXY`（除非它就是要走 proxy 才到得了）。
+
+只有「容器連 Auth Center 也必須經過 proxy」時，才在 `setup.sh` **B5 選 yes**——它會把 `.env` 的
+`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 帶進容器。此時 **`NO_PROXY` 要不要含 Auth Center 主機**看拓樸：
+Auth Center 直連得到就放進去，只能經 proxy 才到得了就不要放。
 
 ---
 
 ## 5. 容器連不到 Auth Center 時：離線驗章公鑰
 
-App 驗 JWT 需要 Auth Center 的公鑰。預設透過 JWKS 端點自動取得，
-若容器出不去（或你不想有這條依賴），把公鑰放進 volume：
+App 驗 JWT 需要 Auth Center 的公鑰，預設透過 JWKS 端點自動取得。若容器出不去，把公鑰放進 `/data/keys/`：
 
 ```bash
-# 從 Auth Center 主機拿 keys/public.pem，放到 volume 的 keys/ 底下
+# volume 模式（名稱：docker volume ls | grep sa-rfi；compose 會加目錄名前綴）
 docker run --rm -v sa-rfi-management_sa-rfi-data:/data -v "$PWD":/src alpine \
     sh -c 'mkdir -p /data/keys && cp /src/public.pem /data/keys/public.pem && chown -R 10001:10001 /data/keys'
+# 主機目錄模式
+sudo mkdir -p /srv/sa-rfi/data/keys && sudo cp public.pem /srv/sa-rfi/data/keys/ && sudo chown -R 10001:10001 /srv/sa-rfi/data/keys
 ```
 
-然後 `.env` 設 `JWKS_URL=off`，`docker compose up -d` 重啟即可。
-（不設 `off` 也能用：JWKS 取不到會自動退回本地公鑰，只是每次登入會多一次失敗的連線嘗試。）
-
-> volume 名稱：`docker volume ls | grep sa-rfi`。compose 會加上專案名前綴，
-> 預設是目錄名 `sa-rfi-management_sa-rfi-data`。
+然後 `setup.sh --env-only` 在 A2 把 `JWKS_URL` 設成 `off`，`docker compose up -d`。
+（不設 `off` 也能用：JWKS 取不到會自動退回本地公鑰，只是每次登入多一次失敗的連線嘗試。）
 
 ---
 
@@ -190,21 +196,19 @@ docker run --rm -v sa-rfi-management_sa-rfi-data:/data -v "$PWD":/src alpine \
 
 ```bash
 git pull
-$EDITOR .env               # 更新 ASSET_VERSION
-docker compose build
-docker compose up -d       # 只重建 app 容器，volume 原封不動
+bash deploy/setup.sh --env-only    # 一路 Enter，只改 ASSET_VERSION（預設會帶新的 commit sha）
+docker compose build               # 或 docker compose pull（registry 模式）
+docker compose up -d               # 只重建 app 容器，volume 原封不動
 docker compose logs -f app
 ```
 
-資料表結構由 App 啟動時自動建立 / 補齊（`create_all`），不需要手動跑 migration。
-升級前建議先備份（第 7 節），花不到一秒。
+資料表由 App 啟動時自動建立 / 補齊，不需要手動 migration。升級前先備份（第 7 節），花不到一秒。
 
 ---
 
 ## 7. 備份與還原
 
-備份腳本在 image 裡，讓它掛上同一個 volume 就能跑，**服務不用停**
-（SQLite 走 online backup API 取一致性快照）：
+備份腳本在 image 裡，掛上同一個 volume 就能跑，**服務不用停**（SQLite 走 online backup API）：
 
 ```bash
 mkdir -p /srv/sa-rfi-backups
@@ -212,10 +216,11 @@ docker run --rm \
     -v sa-rfi-management_sa-rfi-data:/data \
     -v /srv/sa-rfi-backups:/backups \
     sa-rfi-management:latest python scripts/backup.py /backups
-# 產出：/srv/sa-rfi-backups/sa_rfi_<時間>.db 與 uploads_<時間>.tar.gz
+# 產出：sa_rfi_<時間>.db 與 uploads_<時間>.tar.gz
 ```
 
-排程（主機 cron，每日 02:00）：
+主機目錄模式把 `-v sa-rfi-management_sa-rfi-data:/data` 換成 `-v /srv/sa-rfi/data:/data`。
+cron 每日 02:00：
 
 ```cron
 0 2 * * * docker run --rm -v sa-rfi-management_sa-rfi-data:/data -v /srv/sa-rfi-backups:/backups sa-rfi-management:latest python scripts/backup.py /backups
@@ -234,22 +239,19 @@ docker compose up -d
 
 ---
 
-## 8. 換成 PostgreSQL（需要 HA 或多副本時才需要）
+## 8. 換成 PostgreSQL
 
-先用 SQLite 是預期路徑；以十幾個 SA、每週幾十筆的量，單副本綽綽有餘。
-真的要換時只動 `DATABASE_URL` 一行，附件不用搬（一直都在 volume 的 `uploads/`）：
+先用 SQLite 是預期路徑；十幾個 SA、每週幾十筆的量，單副本綽綽有餘。要 HA 或多副本再換。
+附件不用搬（一直都在 `/data/uploads`），只搬資料庫：
 
 ```bash
 docker compose down
-# 取出 SQLite 檔
 docker run --rm -v sa-rfi-management_sa-rfi-data:/d -v "$PWD":/out alpine cp /d/sa_rfi.db /out/sa_rfi.db
-# 重跑兩支腳本：1_env_setup 第 5 步設 POSTGRES_PASSWORD、2_compose_setup 第 4 步選 PostgreSQL
-bash deploy/1_env_setup.sh && bash deploy/2_compose_setup.sh
-docker compose up -d db          # 先只起資料庫
-# 搬資料（保留 id，修改紀錄與附件關聯不會斷）
+bash deploy/setup.sh               # A5 選 PostgreSQL 並設密碼、B4 選 PostgreSQL
+docker compose up -d db            # 先只起資料庫
 uv run python scripts/migrate_sqlite_to_postgres.py --source ./sa_rfi.db \
-    --target postgresql://sarfi:<密碼>@localhost:5432/sa_rfi
-docker compose up -d             # 之後就是一般的 up
+    --target postgresql://sarfi:<密碼>@localhost:5432/sa_rfi   # 保留 id，修改紀錄與附件關聯不會斷
+docker compose up -d
 ```
 
 多副本另外要注意：附件目錄必須是共用儲存（NFS 等），`ASSET_VERSION` 必須固定。
@@ -258,25 +260,21 @@ docker compose up -d             # 之後就是一般的 up
 
 ## 9. 反向代理
 
-容器已用 `--proxy-headers --forwarded-allow-ips '*'` 啟動，會信任前面代理送來的
-`X-Forwarded-Proto / Host`。代理端要做的：
-
-- 把 `X-Forwarded-Proto: https` 傳進來（否則 OAuth callback 會組成 http）
-- 子路徑部署（如 `https://portal.corp/sa-rfi/`）：`APP_BASE_URL` 填完整含路徑，
-  `ROOT_PATH` 會自動推導；代理**不要**剝掉路徑前綴
-- 附件上傳上限：代理的 body size 要 ≥ `MAX_UPLOAD_MB`（nginx：`client_max_body_size 30m`）
-
-Nginx 最小範例：
+容器以 `--proxy-headers --forwarded-allow-ips '*'` 啟動，信任前面代理送來的 `X-Forwarded-Proto / Host`。
+`setup.sh` B1 選 `local` 時埠只綁 `127.0.0.1`，代理指到 `http://127.0.0.1:<埠>`：
 
 ```nginx
 location / {
     proxy_pass         http://127.0.0.1:8003;
     proxy_set_header   Host              $host;
-    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_set_header   X-Forwarded-Proto $scheme;    # 沒有這行 OAuth callback 會組成 http
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-    client_max_body_size 30m;
+    client_max_body_size 30m;                        # ≥ MAX_UPLOAD_MB
 }
 ```
+
+子路徑部署（如 `https://portal.corp/sa-rfi/`）：`APP_BASE_URL` 填完整含路徑，`ROOT_PATH` 自動推導；
+代理**不要**剝掉路徑前綴。
 
 ---
 
@@ -284,20 +282,24 @@ location / {
 
 | 現象 | 原因 | 處理 |
 |---|---|---|
-| 容器啟動就退出，log 有「DATA_DIR 不可寫」 | volume 權限不對 | 容器以 UID 10001 執行：`docker run --rm -v <volume>:/data alpine chown -R 10001:10001 /data` |
-| `/readyz` 回 503 | 看回應裡的 `checks` 哪一項 `fail` | `database`：DATABASE_URL 錯或 PG 沒起來；`data_dir`：同上一列 |
-| 點登入被 Auth Center 顯示「Redirect URI 不匹配」 | `APP_BASE_URL` 與 Auth Center 註冊的 `redirect_uri` 不一致 | 兩邊逐字對齊（含 http/https、尾端路徑） |
-| 登入後又被踢回登入頁，log 有 `InvalidIssuerError` | `AUTH_CENTER_BASE_URL` 與 Auth Center 自己設定的 base URL 不同 | 兩邊填同一個值（App 會自動去掉尾端 `/`） |
-| log 有 `InvalidAudienceError` | `APP_ID` 與 Auth Center 註冊的 `app_id` 不同 | 對齊 |
-| log 有「無可用驗章公鑰」 | 容器連不到 JWKS 且沒有離線公鑰 | 第 5 節 |
-| 登入成功但每個操作都 403 | Auth Center 那邊只給 level 1（read） | `manage_permissions.py grant ... --level 2` |
-| 「Token 交換失敗：invalid_client」 | `CLIENT_SECRET` 錯 | 到 Auth Center 重新產生並更新 `.env` |
+| **build 卡在 `pip install` / `uv sync`** | 沒有 proxy | `setup.sh --env-only` A6 設 `HTTPS_PROXY` |
+| **build 出現 `certificate verify failed`** | 鏡像 / proxy 憑證不被信任 | CA 放 `certs/`，或 A6 設 `PIP_TRUSTED_HOST` |
+| build 從鏡像拿到 403 / 401 | `PIP_INDEX_URL` 路徑錯或要帳密 | 對照 Nexus 的 simple index 路徑 |
+| 容器啟動就退出，log「DATA_DIR 不可寫」 | volume / 目錄權限 | `chown -R 10001:10001 <目錄>`（B3 選主機目錄時腳本會幫做） |
+| `/readyz` 回 503 | 看 `checks` 哪一項 `fail` | `database`：DB 連不上；`data_dir`：同上一列 |
+| `docker compose config`「required variable X is missing」 | `.env` 缺必填 | `setup.sh --env-only` |
+| Auth Center 顯示「Redirect URI 不匹配」 | `APP_BASE_URL` 與註冊的 `redirect_uri` 不一致 | 逐字對齊（含 https、尾端路徑） |
+| 登入後被踢回，log `InvalidIssuerError` | `AUTH_CENTER_BASE_URL` 與 Auth Center 自己的 base URL 不同 | 填同一個值 |
+| log `InvalidAudienceError` | `APP_ID` 與註冊的 `app_id` 不同 | 對齊 |
+| log「無可用驗章公鑰」 | 容器連不到 JWKS 且沒離線公鑰 | 第 5 節 |
+| 登入成功但操作都 403 | Auth Center 只給 level 1 | `manage_permissions.py grant ... --level 2` |
+| 「Token 交換失敗：invalid_client」 | `CLIENT_SECRET` 錯 | Auth Center 重新產生、`setup.sh --env-only` |
 | 「Token 交換失敗：staff_not_found」 | 員工不在 Auth Center 的 MSSQL 主檔 | Auth Center 端處理 |
-| 沒被導去 Auth Center、直接進列表 | `DEV_AUTH_BYPASS=true` | 改 `false`，`docker compose up -d` |
-| icon 全變成英文字（`expand_more`） | 使用者瀏覽器連不到 `fonts.googleapis.com` | 前端仍靠 Google Fonts CDN；純內網需把字型改成本地檔（待辦） |
-| Cookie 一直掉、登入後回首頁又要登入 | `COOKIE_SECURE=true` 但實際走 http | 走 HTTPS，或測試期先設 `false` |
+| 沒被導去 Auth Center、直接進列表 | `DEV_AUTH_BYPASS=true` | A4 改 `false` |
+| icon 全變英文字（`expand_more`） | 瀏覽器連不到 `fonts.googleapis.com` | 前端仍靠 Google Fonts CDN；純內網需改成本地字型（待辦） |
+| Cookie 一直掉 | `COOKIE_SECURE=true` 但實際走 http | 走 HTTPS，或測試期先 `false` |
 
-看 log：`docker compose logs -f app`。想看更細：`.env` 設 `LOG_LEVEL=DEBUG` 後 `up -d`。
+看 log：`docker compose logs -f app`；要更細：A3 把 `LOG_LEVEL` 改 `DEBUG` 後 `up -d`。
 
 ---
 
@@ -305,14 +307,12 @@ location / {
 
 | 檔案 | 用途 |
 |---|---|
-| `docker-compose.yml`（根目錄，**不進 git**） | 由 `2_compose_setup.sh` 產生的完整 compose 設定 |
-| `deploy/1_env_setup.sh` | 互動式逐項產生 `.env` |
-| `deploy/2_compose_setup.sh` | 互動式產生這台主機的 `docker-compose.yml` |
-| `deploy/docker-compose.example.yml` | 腳本以預設選項產生的範例，手動部署可複製到根目錄 |
-| `deploy/_lib.sh` | 上面兩支共用的互動函式 |
-| `deploy/.env.example` | 正式環境版 `.env` 範本 |
+| `deploy/setup.sh` | **互動式產生 `.env` 與 `docker-compose.yml`** |
+| `deploy/README.md` | 本手冊 |
+| `deploy/.env.example` | 正式環境版 `.env` 範本（根目錄那份是開發用） |
+| `deploy/docker-compose.example.yml` | 腳本以預設選項產生的 compose 範例 |
 | `deploy/kubernetes.yaml` | K8s 範例（PVC、Secret、probes、fsGroup） |
-| `.env.example`（根目錄） | 所有變數與說明 |
-| `certs/` | 公司 CA（build 時裝進 image） |
+| `.env`、`docker-compose.yml`（根目錄，**不進 git**） | 腳本產生的實際設定 |
+| `certs/` | 公司 CA（build 與執行階段都會信任） |
 | `scripts/backup.py` | 線上備份 |
 | `scripts/migrate_sqlite_to_postgres.py` | SQLite → PostgreSQL 搬移 |

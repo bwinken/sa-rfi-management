@@ -173,9 +173,8 @@ App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東�
 匯出的 Excel / PPT 全在記憶體組完直接回應，不落地。
 
 ```bash
-bash deploy/1_env_setup.sh      # 逐項問你、產生 .env（或 cp deploy/.env.example .env 手填）
-bash deploy/2_compose_setup.sh  # 問這台主機的埠 / 資料位置 / DB / proxy，產生 docker-compose.yml
-docker compose build            # 內網要走 proxy，第一支腳本會問
+bash deploy/setup.sh   # 逐項問你：網址 / secret / proxy / 埠 / 資料位置 / DB，產生 .env 與 docker-compose.yml
+docker compose build   # 內網要走 proxy + trusted host，腳本會問並在最後列出會帶入的值
 docker compose up -d
 docker compose logs -f app
 ```
@@ -254,8 +253,8 @@ docker compose down
 docker run --rm -v sa-rfi-management_sa-rfi-data:/d -v "$PWD":/out \
     alpine cp /d/sa_rfi.db /out/sa_rfi.db
 
-# 3. 重跑兩支設定腳本：1_env_setup 第 5 步設 POSTGRES_PASSWORD、2_compose_setup 第 4 步選 PostgreSQL
-bash deploy/1_env_setup.sh && bash deploy/2_compose_setup.sh
+# 3. 重跑設定腳本：A5 選 PostgreSQL 並設密碼、B4 選 PostgreSQL
+bash deploy/setup.sh
 docker compose up -d db          # 先只起資料庫
 
 # 4. 搬移，然後全部啟動
@@ -376,8 +375,7 @@ tests/             pytest 測試（191 個）
 .github/workflows/ci.yml  CI
 uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
 Dockerfile         多階段建置，非 root 執行
-deploy/1_env_setup.sh      互動式產生 .env
-deploy/2_compose_setup.sh  互動式產生這台主機的 docker-compose.yml（不進 git；範例見 deploy/docker-compose.example.yml）
+deploy/setup.sh            互動式產生 .env 與這台主機的 docker-compose.yml（後者不進 git；範例見 deploy/docker-compose.example.yml）
 deploy/README.md           部署手冊
 certs/             公司自簽 CA（放 .crt 進去，build 與執行階段都會信任）
 deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）

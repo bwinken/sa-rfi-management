@@ -1,15 +1,16 @@
-# 範例：deploy/2_compose_setup.sh 以預設選項產生（本機 build、具名 volume、SQLite、不走 proxy）。
-# 實際部署請執行該腳本產生根目錄的 docker-compose.yml；要手動用的話複製到根目錄再改。
+# 範例：deploy/setup.sh 以預設選項產生（本機 build、具名 volume、SQLite、不走 proxy）。
+# 實際部署請執行 bash deploy/setup.sh 產生根目錄的 docker-compose.yml；要手動用的話複製到根目錄再改。
 #
-# 這是這台主機專屬的 compose 設定，不進 git。環境變數的值來自同目錄的 .env
-# （bash deploy/1_env_setup.sh 產生）；重新執行 2_compose_setup.sh 可逐項修改，也可直接手動編輯。
+# 這是這台主機專屬的 compose 設定，不進 git。環境變數的值來自同目錄的 .env；
+# 重新執行 bash deploy/setup.sh --compose-only 可逐項修改，也可直接手動編輯。
 # App 本身 stateless：所有狀態都在容器的 /data（下方的 volume）。
 
 services:
   app:
     build:
       context: .
-      # 內網 build 必要的 proxy / 私有 PyPI，值來自 .env；公司 CA 放 certs/ 即可
+      # ⚠ 內網 build 必要：proxy、PyPI 鏡像、trusted host（值來自 .env；公司 CA 放 certs/）
+      #   PIP_TRUSTED_HOST 會同時給 pip --trusted-host 與 uv --allow-insecure-host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -57,7 +58,7 @@ services:
       DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
       DEV_USER: ${DEV_USER:-dev.user}
       DEV_SCOPES: ${DEV_SCOPES:-read,write,admin}
-    # 狀態放具名 volume；備份見 deploy/README.md 第 7 節
+    # 狀態放具名 volume；備份見 deploy/README.md
     volumes:
       - sa-rfi-data:/data
     healthcheck:

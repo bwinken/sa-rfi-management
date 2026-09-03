@@ -14,7 +14,7 @@
         --source ./data/sa_rfi.db \
         --target postgresql://sarfi:pw@localhost:5432/sa_rfi
 
-    # 3. 用 deploy/2_compose_setup.sh 選 PostgreSQL 重新產生 docker-compose.yml，再啟動
+    # 3. 用 deploy/setup.sh 選 PostgreSQL 重新產生 docker-compose.yml，再啟動
     docker compose up -d
 
 會保留原本的 id，所以修改紀錄與附件的關聯不會斷。
