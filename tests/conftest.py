@@ -21,10 +21,6 @@ os.environ.update(
     DEV_SCOPES="read,write,admin",
     APP_BASE_URL="http://testserver",
     ASSET_VERSION="test",
-    # MCP 的 session manager 是 anyio task group，pytest 的 fixture
-    # 拆解會在不同 task 進行，會踩到 cancel scope 限制。
-    # MCP 另外用單元測試覆蓋（見 test_mcp_auth.py）。
-    MCP_ENABLED="false",
 )
 # 允許用 SA_RFI_TEST_DATABASE_URL 指向 PostgreSQL，讓 CI 兩種資料庫都跑
 if os.environ.get("SA_RFI_TEST_DATABASE_URL"):

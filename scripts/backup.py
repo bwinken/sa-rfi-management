@@ -8,7 +8,7 @@
 讀取與主程式相同的設定（DATA_DIR / SQLITE_PATH / DATABASE_URL / UPLOAD_DIR）。
 
 用法：
-    python scripts/backup.py [備份目的資料夾，預設 ./backups]
+    python scripts/backup.py [備份目的資料夾，預設 ./backups] [--uploads-only]
 
 容器部署時，讓備份工作掛上同一個 data volume 再執行，例如：
     docker run --rm -v sa-rfi-data:/data -v /srv/backups:/backups \
@@ -80,13 +80,19 @@ def backup_postgres(dest: Path, stamp: str) -> Path | None:
 
 
 def main() -> int:
-    dest = Path(sys.argv[1] if len(sys.argv) > 1 else "./backups")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    dest = Path(args[0] if args else "./backups")
     dest.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     failed = False
 
-    # 1) 資料庫
-    if _is_postgres():
+    # 1) 資料庫（--uploads-only 跳過；容器部署用 PostgreSQL 時 app image 沒有 pg_dump，
+    #    由 deploy/backup.sh 改以 docker compose exec db pg_dump 備份 DB）
+    if "--uploads-only" in flags:
+        print("資料庫：略過（--uploads-only）")
+        db_out = None
+    elif _is_postgres():
         target = urlparse(DATABASE_URL.replace("+asyncpg", "")).path.lstrip("/")
         print(f"資料庫：PostgreSQL（{target}）")
         db_out = backup_postgres(dest, stamp)
@@ -95,7 +101,7 @@ def main() -> int:
         db_out = backup_sqlite(dest, stamp)
     if db_out:
         print(f"DB   -> {db_out}（{db_out.stat().st_size / 1024:.0f} KB）")
-    else:
+    elif "--uploads-only" not in flags:
         failed = True
 
     # 2) 附件目錄打包

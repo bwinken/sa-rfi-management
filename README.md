@@ -136,59 +136,11 @@ Auth Center 的 JWT 只有 12 小時而且**沒有 refresh token**，放進腳�
 Token 一律只有 `read` 權限 —— 即使建立者本人有 `write` / `admin`，
 拿 token 去打寫入端點也會被擋（實測回 401）。
 
-## MCP server
-
-平台在 `/mcp` 掛了一個 MCP server，讓 Claude 之類的助理可以直接查 RFI ——
-「上週哪些案子還沒回客戶」「BOE 今年送了幾個 OLED NB」這類問題不用自己開網頁篩。
-
-工具（全部唯讀）：
-
-| 工具 | 用途 |
-|---|---|
-| `search_rfis` | 搜尋，篩選條件與網頁完全相同且可多值 |
-| `get_rfi` | 單筆完整內容，含修改紀錄 |
-| `get_stats` | 依週別 / 產品 / 面板廠 / 客戶 / 狀態 / 負責 SA 統計 |
-| `list_filter_values` | 各欄位目前實際有哪些值（讓助理知道能怎麼篩） |
-| `describe_fields` | 欄位定義與可選值 |
-
-**沒有任何寫入工具** —— 不是靠權限擋，是結構上就不存在。新增與修改一律回網頁做，
-才會留下修改說明與逐欄位紀錄。
-
-### 設定方式
-
-先在平台的 **API Token** 頁面建立一支 token，再把它填進 MCP client 設定：
-
-```json
-{
-  "mcpServers": {
-    "sa-rfi": {
-      "type": "http",
-      "url": "https://rfi.example.com/mcp/",
-      "headers": { "Authorization": "Bearer sarfi_xxxxxxxx..." }
-    }
-  }
-}
-```
-
-Token 預設 90 天有效，撤銷後 MCP 立即失效（與 API 共用同一個認證接縫）。
-
-> **為什麼是貼 token，而不是像一般 SSO 那樣點一下就好？**
-> MCP 規範要求授權伺服器支援 OAuth 2.1（PKCE、動態註冊、refresh token）。
-> 目前的 Auth Center 有 OIDC 但缺這三項，且 `redirect_uri` 必須預先註冊成單一值，
-> 所以沒辦法直接當 MCP 的授權伺服器。
-> 個人 Token 是過渡方案：貼一次、90 天不用管、隨時可撤銷。
->
-> 要做到「完全不用貼」有兩條路：讓 Auth Center 補上那三項標準功能（推薦，
-> 對所有接它的系統都有好處，不只 MCP），或讓本平台自己當授權伺服器
-> （規範允許，但等於多一個要維運的 OAuth 伺服器）。
-> 兩者都不影響現在的設定方式 —— 認證只有 `app/mcp_server.py` 的
-> `TokenAuthMiddleware` 一個接縫，換掉它即可，工具不用動。
-
 ## 測試
 
 ```bash
 uv sync                 # 會一併安裝 dev 相依（pytest / ruff）
-uv run pytest           # 190 個測試，約 15 秒
+uv run pytest           # 191 個測試，約 15 秒
 uv run ruff check app scripts tests
 ```
 
@@ -201,7 +153,7 @@ uv run ruff check app scripts tests
 | `test_rfi_crud.py` | 建立／編輯／刪除，**欄位層級合併與衝突偵測** |
 | `test_import_export.py` | 舊表頭辨識、值正規化、選項容錯、去重；Excel／PPTX 產出結構 |
 | `test_auth.py` | scope 分級、API Token 的過期／撤銷／唯讀邊界 |
-| `test_api.py` | API 回應形狀、與網頁篩選結果一致、MCP 認證接縫 |
+| `test_api.py` | API 回應形狀、與網頁篩選結果一致 |
 
 測試會用暫存目錄當 `DATA_DIR`，不會動到你本機的資料。
 預設跑 SQLite；要對 PostgreSQL 跑同一份測試：
@@ -221,10 +173,14 @@ App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東�
 匯出的 Excel / PPT 全在記憶體組完直接回應，不落地。
 
 ```bash
-cp .env.example .env      # 填 CLIENT_SECRET 等；內網再加 proxy 設定（見下）
+bash deploy/setup.sh   # 逐項問你：網址 / secret / proxy / 埠 / 資料位置 / DB，產生 .env 與 docker-compose.yml
+docker compose build   # 內網要走 proxy + trusted host，腳本會問並在最後列出會帶入的值
 docker compose up -d
 docker compose logs -f app
 ```
+
+完整部署手冊（Auth Center 註冊、內網 proxy、離線公鑰、升級、備份還原、
+反向代理、故障排除）見 **[`deploy/README.md`](deploy/README.md)**。
 
 Auth Center 還沒接好、只想先把畫面跑起來看，可在 `.env` 加 `DEV_AUTH_BYPASS=true`
 （**正式環境務必移除**）。
@@ -297,13 +253,15 @@ docker compose down
 docker run --rm -v sa-rfi-management_sa-rfi-data:/d -v "$PWD":/out \
     alpine cp /d/sa_rfi.db /out/sa_rfi.db
 
-# 3. 起好 PostgreSQL（或用下面的 compose override），然後搬移
+# 3. 重跑設定腳本：A5 選 PostgreSQL 並設密碼、B4 選 PostgreSQL
+bash deploy/setup.sh
+docker compose up -d db          # 先只起資料庫
+
+# 4. 搬移，然後全部啟動
 uv run python scripts/migrate_sqlite_to_postgres.py \
     --source ./sa_rfi.db \
     --target postgresql://sarfi:pw@localhost:5432/sa_rfi
-
-# 4. 在 .env 設好 POSTGRES_PASSWORD，改用 override 檔啟動
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+docker compose up -d
 ```
 
 **附件不需要搬** —— 它們一直都在 `DATA_DIR/uploads`，不在資料庫裡，
@@ -343,14 +301,20 @@ Kubernetes 請設 `securityContext.fsGroup: 10001` 讓 volume 權限對齊。
 於 Auth Center 的 `config/apps.yaml` 新增：
 
 ```yaml
-sa_rfi_management:
-  name: SA RFI 管理平台
-  client_secret: <bcrypt hash of CLIENT_SECRET>
-  redirect_uri: http://localhost:8003/auth/callback
-  app_url: http://localhost:8003
-  default_level: 1          # 預設給 read；需要 write 的 SA 授 level 2
-  token_expire_hours: 12
+apps:
+  - app_id: sa_rfi_management
+    name: SA RFI 管理平台
+    client_secret: <bcrypt hash of CLIENT_SECRET>   # from passlib.hash import bcrypt; bcrypt.hash("...")
+    redirect_uri: http://localhost:8003/auth/callback   # 必須與本平台的 REDIRECT_URI 完全一致
+    app_url: http://localhost:8003
+    allowed_orgs: ["<SA 部門的 org_id>"]   # default_level 只在 allowed_orgs 非空時生效
+    default_level: 1          # 組織內預設 read；需要 write 的 SA 另外授 level 2
+    token_expire_hours: 12
 ```
+
+也可以直接在 Auth Center 的 Admin UI「應用程式」頁面新增，會自動產生 client_secret。
+`redirect_uri` 是逐字比對的：本平台預設由 `APP_BASE_URL + /auth/callback` 組出，
+若走反向代理或改了網域，兩邊要一起改。
 
 驗章公鑰建議走 JWKS（免維護 public.pem）；離線環境則把 Auth Center 的
 `keys/public.pem` 複製到本專案 `keys/public.pem`（路徑由 `PUBLIC_KEY_PATH` 設定）。
@@ -375,7 +339,7 @@ python scripts/manage_permissions.py grant <employee> sa_rfi_management --level 
 | `APP_ID` | 在 apps.yaml 註冊的 App ID | `sa_rfi_management` |
 | `CLIENT_SECRET` | App 明文密鑰 | — |
 | `REDIRECT_URI` | OAuth callback，留空自動組出 | （自動） |
-| `JWKS_URL` | 驗章公鑰端點，留空自動推導；設為空字串則停用 | （自動） |
+| `JWKS_URL` | 驗章公鑰端點，留空自動推導；填 `off` 則停用、只用本地 PEM | （自動） |
 | `PUBLIC_KEY_PATH` | 離線後備的 RS256 公鑰路徑 | `./keys/public.pem` |
 | `SQLITE_PATH` | 單獨指定 SQLite 檔位置（一般不需要，用 `DATA_DIR` 即可） | `{DATA_DIR}/sa_rfi.db` |
 | `UPLOAD_DIR` | 單獨指定附件目錄（一般不需要） | `{DATA_DIR}/uploads` |
@@ -401,19 +365,18 @@ app/
   routes/exports.py  Excel 匯出 / 匯入、投影片（PPTX）匯出
   routes/api.py      唯讀 JSON API（/api/v1）
   routes/tokens.py   個人 API Token 的建立與撤銷
-  mcp_server.py      MCP server（/mcp），唯讀工具 + 認證 middleware
 templates/         Jinja2 HTML（list / form / detail / history / dashboard / import / login / error）
 static/css/style.css   樣式
 static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用篩選」按鈕）
 scripts/backup.py      資料庫備份（SQLite online backup / pg_dump）+ 附件打包
 scripts/migrate_sqlite_to_postgres.py  SQLite → PostgreSQL 資料搬移
 scripts/seed_demo.py   示範資料
-tests/             pytest 測試（190 個）
+tests/             pytest 測試（191 個）
 .github/workflows/ci.yml  CI
 uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
 Dockerfile         多階段建置，非 root 執行
-docker-compose.yml 單機部署（預設 SQLite）
-docker-compose.postgres.yml  疊上去即改用 PostgreSQL
+deploy/setup.sh            互動式產生 .env 與這台主機的 docker-compose.yml（後者不進 git；範例見 deploy/docker-compose.example.yml）
+deploy/README.md           部署手冊
 certs/             公司自簽 CA（放 .crt 進去，build 與執行階段都會信任）
 deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）
 ```
@@ -451,16 +414,16 @@ deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）
 PostgreSQL 走 `pg_dump -Fc`），附件目錄一併打包：
 
 ```bash
-uv run python scripts/backup.py /data/backups
+# 本機開發
+uv run python scripts/backup.py ./backups
 
-# 容器部署時，讓備份工作掛上同一個 data volume：
-docker run --rm -v sa-rfi-data:/data -v /srv/backups:/backups \
-    -e DATA_DIR=/data sa-rfi-management:latest \
-    python scripts/backup.py /backups
-
-# 建議搭配 cron，每日 02:00：
-# 0 2 * * * cd /path/to/sa-rfi-management && .venv/bin/python scripts/backup.py /data/backups
+# 容器部署：用 deploy/backup.sh，會自動判斷 SQLite / PostgreSQL 與資料掛載方式
+bash deploy/backup.sh                    # → /srv/sa-rfi-backups/
+# cron 每日 02:00：
+# 0 2 * * * cd /path/to/sa-rfi-management && bash deploy/backup.sh >> /var/log/sa-rfi-backup.log 2>&1
 ```
+
+還原步驟見 `deploy/README.md` 第 7 節。
 
 預設保留最近 14 份（`BACKUP_KEEP` 可調）。
 

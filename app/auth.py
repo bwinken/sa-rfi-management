@@ -6,7 +6,8 @@
     3. 後端用 code + client_secret 向 /auth/token 換取 RS256 JWT
     4. JWT 存入 httponly Cookie，後續以公鑰驗證
 
-JWT payload 欄位：sub（員工帳號）、name、org_id、scopes（read/write/admin）。
+JWT payload 欄位：iss、sub（員工帳號）、aud、exp、org_id、scopes（read/write/admin）。
+沒有 name claim；顯示名稱一律以 sub 為準。
 """
 
 import hashlib

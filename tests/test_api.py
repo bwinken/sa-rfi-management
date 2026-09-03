@@ -1,4 +1,4 @@
-"""唯讀 JSON API 的回應形狀與 MCP 認證接縫。
+"""唯讀 JSON API 的回應形狀。
 
 API 與網頁共用同一套篩選規則，這裡確認兩者結果一致 ——
 「畫面所見即 API 所得」是這個設計的重點。
@@ -101,52 +101,3 @@ class TestOtherEndpoints:
             if path.startswith("/api/"):
                 assert set(ops) <= {"get"}, f"{path} 有非 GET 的方法：{set(ops)}"
 
-
-class TestMcpAuthMiddleware:
-    """MCP 目前擱置，但認證接縫是安全關鍵，仍以單元測試覆蓋。"""
-
-    async def test_rejects_without_token(self, session, monkeypatch):
-        from app.config import settings as s
-        from app.mcp_server import TokenAuthMiddleware
-        monkeypatch.setattr(s, "DEV_AUTH_BYPASS", False)
-
-        sent = []
-
-        async def inner(scope, receive, send):
-            sent.append("inner_called")
-
-        async def send(message):
-            sent.append(message)
-
-        mw = TokenAuthMiddleware(inner)
-        await mw({"type": "http", "path": "/mcp/", "headers": []},
-                 lambda: None, send)
-        assert "inner_called" not in sent
-        assert sent[0]["status"] == 401
-        headers = dict(sent[0]["headers"])
-        assert b"www-authenticate" in headers
-
-    async def test_accepts_valid_token(self, session, monkeypatch):
-        from app.auth import generate_token
-        from app.config import settings as s
-        from app.mcp_server import TokenAuthMiddleware
-        from app.models import ApiToken
-        monkeypatch.setattr(s, "DEV_AUTH_BYPASS", False)
-
-        raw, prefix, token_hash = generate_token()
-        session.add(ApiToken(name="t", prefix=prefix, token_hash=token_hash,
-                             scopes="read", owner="test.user"))
-        await session.commit()
-
-        called = []
-
-        async def inner(scope, receive, send):
-            called.append(scope["state"]["mcp_user"]["sub"])
-
-        mw = TokenAuthMiddleware(inner)
-        await mw(
-            {"type": "http", "path": "/mcp/",
-             "headers": [(b"authorization", f"Bearer {raw}".encode())]},
-            lambda: None, lambda m: None,
-        )
-        assert called == ["test.user"]

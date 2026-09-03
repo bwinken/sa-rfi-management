@@ -210,3 +210,26 @@ class TestBearerParsing:
     ])
     def test_parsing(self, header, expected):
         assert auth_module._bearer(header) == expected
+
+
+class TestJwksUrlSetting:
+    """JWKS_URL 的三種狀態：留空 = 自動推導、明確網址、off = 停用。
+
+    「留空 = 自動」是為了讓 docker compose 一律帶入 ${JWKS_URL:-} 時不會誤停用。
+    """
+
+    def test_blank_derives_from_auth_center(self, monkeypatch):
+        from app.config import settings as s
+        monkeypatch.setattr(s, "AUTH_CENTER_BASE_URL", "https://auth.example.com")
+        monkeypatch.setattr(s, "JWKS_URL", "")
+        assert s.jwks_url == "https://auth.example.com/.well-known/jwks.json"
+
+    def test_explicit_url_is_used_verbatim(self, monkeypatch):
+        from app.config import settings as s
+        monkeypatch.setattr(s, "JWKS_URL", "https://keys.corp/jwks.json")
+        assert s.jwks_url == "https://keys.corp/jwks.json"
+
+    def test_off_disables(self, monkeypatch):
+        from app.config import settings as s
+        monkeypatch.setattr(s, "JWKS_URL", "OFF")
+        assert s.jwks_url == ""

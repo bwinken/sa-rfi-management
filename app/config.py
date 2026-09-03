@@ -42,7 +42,9 @@ class Settings:
     ).rstrip("/")
 
     # Auth Center
-    AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000")
+    # Auth Center 簽發 JWT 的 iss 是去掉尾端斜線的 base URL，這裡同樣正規化，
+    # 否則 .env 多打一個「/」就會全部驗證失敗（InvalidIssuerError）
+    AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000").rstrip("/")
     APP_ID: str = os.getenv("APP_ID", "sa_rfi_management")
     CLIENT_SECRET: str = os.getenv("CLIENT_SECRET", "sa_rfi_secret_change_me")
     # 未指定時，自動以 APP_BASE_URL 組出 callback
@@ -52,9 +54,11 @@ class Settings:
     PUBLIC_KEY_PATH: str = os.getenv("PUBLIC_KEY_PATH", "./keys/public.pem")
     ALGORITHM: str = "RS256"
     # Auth Center 的 JWKS 端點（OIDC 標準）；用來自動取得驗章公鑰，免去
-    # 手動維護 public.pem。未設定時自動由 AUTH_CENTER_BASE_URL 推導；
-    # 設為空字串可停用 JWKS、只用本地 PEM。
-    _JWKS_URL_RAW = os.getenv("JWKS_URL")
+    # 手動維護 public.pem。留空（或未設定）時自動由 AUTH_CENTER_BASE_URL 推導；
+    # 設為 off 則停用 JWKS、只用本地 PEM。
+    # 「留空 = 自動」而不是「留空 = 停用」，是為了讓 docker compose 用
+    # ${JWKS_URL:-} 一律帶入這個變數時，沒填的人仍然走自動推導。
+    JWKS_URL: str = os.getenv("JWKS_URL", "").strip()
 
     # ── 狀態存放位置 ─────────────────────────────────────────
     # 這個 App 的容器本身是 stateless 的：所有會被寫入、且重啟後必須還在的
@@ -67,9 +71,6 @@ class Settings:
     )
     UPLOAD_DIR: Path = Path(os.getenv("UPLOAD_DIR") or (DATA_DIR / "uploads"))
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "25"))
-
-    # 是否掛載 MCP server（/mcp）。測試與不需要 MCP 的部署可關閉。
-    MCP_ENABLED: bool = _bool("MCP_ENABLED", "true")
 
     # 靜態資源版本（快取破壞用）。多副本部署時請設成 image tag / commit sha，
     # 讓每個副本回傳同一個值；未設定則以啟動時間為準。
@@ -122,10 +123,12 @@ class Settings:
 
     @property
     def jwks_url(self) -> str:
-        """JWKS 端點；未設定 JWKS_URL 時由 AUTH_CENTER_BASE_URL 推導，空字串表示停用。"""
-        if self._JWKS_URL_RAW is None:
-            return self.AUTH_CENTER_BASE_URL.rstrip("/") + "/.well-known/jwks.json"
-        return self._JWKS_URL_RAW
+        """JWKS 端點；JWKS_URL 留空時由 AUTH_CENTER_BASE_URL 推導，off 表示停用（回傳空字串）。"""
+        if self.JWKS_URL.lower() == "off":
+            return ""
+        if not self.JWKS_URL:
+            return self.AUTH_CENTER_BASE_URL + "/.well-known/jwks.json"
+        return self.JWKS_URL
 
 
 def prepare_storage(s: "Settings") -> None:
