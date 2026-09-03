@@ -277,6 +277,9 @@ if [ "$DO_ENV" = 1 ]; then
     note "build 要下載 Python 套件。內網環境要走 proxy；用內部 PyPI 鏡像（Nexus / Artifactory）且它是自簽憑證時，"
     note "還要設 trusted host（pip 的 --trusted-host、uv 的 --allow-insecure-host 都會帶上）。這些都是 build args，不會進容器。"
     note "公司自簽 / 攔截式 proxy 的 CA 憑證（.crt，PEM 格式）放到 certs/，build 會裝進 image；有放 CA 的話 trusted host 通常就不需要。"
+    ask BASE_IMAGE \
+        "base image。官方是 python:3.11-slim；內網 registry 有鏡像就填完整位置（例：registry.corp/python:3.11-slim），daemon 就不用出外網拉。" \
+        "python:3.11-slim" required
     if yesno "build 需要走 proxy 嗎？（內網環境請選 y）" y; then
         USE_PROXY=1
         ask HTTPS_PROXY "HTTPS proxy，例：http://proxy.corp:3128" "" url_required
@@ -284,13 +287,11 @@ if [ "$DO_ENV" = 1 ]; then
         ask NO_PROXY "不走 proxy 的主機清單（逗號分隔）。預設已把 Auth Center 主機名加進去。" \
             "localhost,127.0.0.1,$(url_host "$(get_var AUTH_CENTER_BASE_URL)")"
         ask PIP_INDEX_URL "PyPI 來源。有內部鏡像就填（例：https://nexus.corp/repository/pypi-proxy/simple）；留空 = 官方 https://pypi.org/simple 經 proxy 下載。" "" url
-        th_default=""; [ -n "$(get_var PIP_INDEX_URL)" ] && th_default="$(url_host "$(get_var PIP_INDEX_URL)")"
+        if [ -n "$(get_var PIP_INDEX_URL)" ]; then th_default="$(url_host "$(get_var PIP_INDEX_URL)")"
+        else th_default="pypi.org,files.pythonhosted.org"; fi
         ask PIP_TRUSTED_HOST \
-            "pip / uv 對這個主機略過 TLS 驗證（只填主機名，一個）。鏡像用自簽憑證時填鏡像主機名；用官方 PyPI 且 proxy 會攔 TLS 時，正確做法是把公司 CA 放進 certs/，不要填 pypi.org。" \
-            "$th_default"
-        if [ -n "$(get_var PIP_INDEX_URL)" ] && [ -z "$(get_var PIP_TRUSTED_HOST)" ] && ! ls "$ROOT"/certs/*.crt >/dev/null 2>&1; then
-            warn "有設 PIP_INDEX_URL、沒設 PIP_TRUSTED_HOST、certs/ 也沒有 CA —— 鏡像若是自簽憑證，build 會在 uv sync 出現 certificate verify failed。"
-        fi
+            "pip / uv 對這些主機略過 TLS 驗證（逗號分隔，可多個）。用鏡像 → 鏡像主機名；走官方 PyPI → pypi.org,files.pythonhosted.org（下載檔案在第二個）。內網 proxy 幾乎都會攔 TLS，沒設幾乎一定 build fail，所以必填。" \
+            "$th_default" required
         if ! ls "$ROOT"/certs/*.crt >/dev/null 2>&1; then
             note "certs/ 目前沒有 .crt。若 proxy 會攔截 TLS（build 時出現 SSL / certificate verify failed），把公司 CA 放進去再 build。"
         fi
@@ -315,8 +316,9 @@ if [ "$DO_ENV" = 1 ]; then
             printf '\n# ── PostgreSQL（docker-compose.yml 選 PostgreSQL 才用到）──\n'
             for v in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD; do emit "$v"; done
         fi
+        printf '\n# ── docker compose build 用（build args）；執行階段要走 proxy 由 docker-compose.yml 決定 ──\n'
+        emit BASE_IMAGE
         if [ "$USE_PROXY" = 1 ]; then
-            printf '\n# ── docker compose build 用（build args）；執行階段要走 proxy 由 docker-compose.yml 決定 ──\n'
             for v in HTTPS_PROXY HTTP_PROXY NO_PROXY PIP_INDEX_URL PIP_TRUSTED_HOST; do emit "$v"; done
         fi
     } > "$tmp"
@@ -461,6 +463,7 @@ EOF
       # ⚠ 內網 build 必要：proxy、PyPI 鏡像、trusted host（值來自 .env；公司 CA 放 certs/）
       #   PIP_TRUSTED_HOST 會同時給 pip --trusted-host 與 uv --allow-insecure-host
       args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
@@ -600,14 +603,34 @@ fi
 img_src="$(choice_value IMAGE_SOURCE)"; [ -n "$img_src" ] || img_src="build"
 if [ "$img_src" = "build" ]; then
     printf '\n   %sdocker compose build 會帶入：%s\n' "$B" "$NC"
-    for v in HTTPS_PROXY HTTP_PROXY NO_PROXY PIP_INDEX_URL PIP_TRUSTED_HOST; do
+    for v in BASE_IMAGE HTTPS_PROXY HTTP_PROXY NO_PROXY PIP_INDEX_URL PIP_TRUSTED_HOST; do
         val="$(env_value "$ENV_FILE" "$v")"
         [ -n "$val" ] || { [ "$v" = "PIP_INDEX_URL" ] && val="https://pypi.org/simple（官方）"; }
+        [ -n "$val" ] || { [ "$v" = "BASE_IMAGE" ] && val="python:3.11-slim"; }
         printf '     %-18s %s\n' "$v" "${val:-（未設）}"
     done
     if ls "$ROOT"/certs/*.crt >/dev/null 2>&1; then printf '     %-18s %s\n' "certs/" "$(ls "$ROOT"/certs/*.crt | xargs -n1 basename | tr '\n' ' ')"
     else printf '     %-18s （無 CA；proxy 攔 TLS 的話 build 會失敗）\n' "certs/"; fi
     [ -z "$(env_value "$ENV_FILE" HTTPS_PROXY)" ] && warn "沒有 proxy：內網環境 build 會卡在下載套件。"
+    [ -z "$(env_value "$ENV_FILE" PIP_TRUSTED_HOST)" ] && [ -n "$(env_value "$ENV_FILE" HTTPS_PROXY)" ] && \
+        warn "沒有 PIP_TRUSTED_HOST：proxy 攔 TLS 的話 build 會 certificate verify failed（bash deploy/setup.sh --env-only 的 A6 補上）。"
+    # FROM 拉 base image 是 docker daemon 做的，不吃 build args；daemon 沒 proxy、本機又沒這個 image 就會卡在第一步
+    if [ -n "$(env_value "$ENV_FILE" HTTPS_PROXY)" ] && docker info >/dev/null 2>&1; then
+        daemon_proxy="$(docker info --format '{{.HTTPProxy}}{{.HTTPSProxy}}' 2>/dev/null || true)"
+        base_img="$(env_value "$ENV_FILE" BASE_IMAGE)"; [ -n "$base_img" ] || base_img="python:3.11-slim"
+        case "$base_img" in
+            */*) is_internal=1 ;;   # 有 registry 前綴 → 內網 registry，daemon 不需要 proxy
+            *)   is_internal=0 ;;
+        esac
+        if [ "$is_internal" = 0 ] && [ -z "$daemon_proxy" ] && ! docker image inspect "$base_img" >/dev/null 2>&1; then
+            warn "docker daemon 沒有設 proxy，而且本機沒有 base image $base_img —— build 第一步 FROM 就會拉不到。"
+            note "兩條路：A6 把 BASE_IMAGE 指到內網 registry 的鏡像（推薦），或給 daemon 設 proxy："
+            note "設定方式（systemd）：/etc/systemd/system/docker.service.d/http-proxy.conf 加上"
+            note "  [Service]"
+            note "  Environment=\"HTTPS_PROXY=$(env_value "$ENV_FILE" HTTPS_PROXY)\" \"HTTP_PROXY=$(env_value "$ENV_FILE" HTTP_PROXY)\" \"NO_PROXY=$(env_value "$ENV_FILE" NO_PROXY)\""
+            note "然後 sudo systemctl daemon-reload && sudo systemctl restart docker，再 docker info | grep -i proxy 確認。"
+        fi
+    fi
 fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && [ -f "$COMPOSE_FILE" ]; then

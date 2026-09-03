@@ -1,5 +1,9 @@
+# base image 可換成內網 registry 的鏡像：--build-arg BASE_IMAGE=registry.corp/python:3.11-slim
+# （ARG 放在第一個 FROM 之前才能被 FROM 使用；兩個 stage 都用同一個）
+ARG BASE_IMAGE=python:3.11-slim
+
 # ── build stage：只用來裝相依套件 ─────────────────────────────
-FROM python:3.11-slim-bookworm AS builder
+FROM ${BASE_IMAGE} AS builder
 
 # 內網環境常見需求：走 proxy、用私有 PyPI 鏡像、信任公司自簽 CA。
 # 需要時用 --build-arg 帶進來；都不給就是一般公開網路的行為。
@@ -7,6 +11,10 @@ FROM python:3.11-slim-bookworm AS builder
 #     --build-arg HTTPS_PROXY=http://proxy.corp:3128 \
 #     --build-arg PIP_INDEX_URL=https://nexus.corp/repository/pypi/simple \
 #     --build-arg PIP_TRUSTED_HOST=nexus.corp .
+# PIP_TRUSTED_HOST 可給多個（逗號或空白分隔），例如走官方 PyPI 但 proxy 會攔 TLS：
+#     --build-arg PIP_TRUSTED_HOST="pypi.org,files.pythonhosted.org"
+# 注意：FROM 拉 base image 是 docker daemon 做的，不吃 proxy 類的 build args，
+# daemon 本身要另外設 proxy，或把 BASE_IMAGE 指到內網 registry（見 deploy/README.md 第 3 節）。
 ARG HTTP_PROXY=""
 ARG HTTPS_PROXY=""
 ARG NO_PROXY=""
@@ -28,10 +36,10 @@ ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     UV_NATIVE_TLS=1
 
-# --trusted-host / --allow-insecure-host 只在有給值時才加上去
-RUN pip install --no-cache-dir \
-        ${PIP_TRUSTED_HOST:+--trusted-host ${PIP_TRUSTED_HOST}} \
-        uv==0.9.28
+# --trusted-host 只在有給值時才加上去；多個主機各加一次
+RUN set -eu; flags=""; \
+    for h in $(printf '%s' "${PIP_TRUSTED_HOST}" | tr ',' ' '); do flags="$flags --trusted-host $h"; done; \
+    pip install --no-cache-dir $flags uv==0.9.28
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -42,11 +50,13 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 # 先只複製依賴描述，讓這層在原始碼變動時仍能命中快取
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev \
-        ${PIP_TRUSTED_HOST:+--allow-insecure-host ${PIP_TRUSTED_HOST}}
+# uv 對應的旗標是 --allow-insecure-host，同樣每個主機各加一次
+RUN set -eu; flags=""; \
+    for h in $(printf '%s' "${PIP_TRUSTED_HOST}" | tr ',' ' '); do flags="$flags --allow-insecure-host $h"; done; \
+    uv sync --frozen --no-dev $flags
 
 # ── runtime stage ────────────────────────────────────────────
-FROM python:3.11-slim-bookworm
+FROM ${BASE_IMAGE}
 
 # 非 root 執行；UID 固定，方便在 k8s 用 fsGroup 對齊 volume 權限
 RUN groupadd --gid 10001 app \

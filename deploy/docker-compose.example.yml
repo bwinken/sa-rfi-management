@@ -12,6 +12,7 @@ services:
       # ⚠ 內網 build 必要：proxy、PyPI 鏡像、trusted host（值來自 .env；公司 CA 放 certs/）
       #   PIP_TRUSTED_HOST 會同時給 pip --trusted-host 與 uv --allow-insecure-host
       args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}

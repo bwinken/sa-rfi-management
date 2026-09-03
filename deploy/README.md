@@ -128,34 +128,64 @@ bash deploy/setup.sh --compose-only  # 只重做 docker-compose.yml：改埠、�
 
 ## 3. `docker compose build` 注意：proxy 與 trusted host
 
-build 要下載 Python 套件（`pip install uv` → `uv sync`）。內網環境**兩件事都要設**，否則卡在下載：
+build 會做三件對外的事，內網環境每一件都可能卡住，**三個都要設**：
 
-| 要設什麼 | `.env` 變數 | 什麼情況需要 |
+| # | 誰在做 | 要設什麼 | 沒設會怎樣 |
+|---|---|---|---|
+| 1 | **docker daemon** 拉 base image `python:3.11-slim` | `BASE_IMAGE` 指到內網 registry，或 daemon 自己設 proxy（見 3.2） | build 第一步就 `failed to resolve` / 卡住 |
+| 2 | 容器內 `pip install uv` → `uv sync` 下載套件 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | 卡在下載沒有進度 |
+| 3 | 同上，TLS 驗證 | **`PIP_TRUSTED_HOST`**（或 CA 放 `certs/`） | `certificate verify failed` |
+
+### 3.1 `.env` 裡的 build args（`setup.sh` A6 會問）
+
+| 變數 | 填什麼 | 說明 |
 |---|---|---|
-| **proxy** | `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` | 出不去的內網一定要 |
-| **PyPI 鏡像** | `PIP_INDEX_URL` | 有 Nexus / Artifactory 就填；沒有就留空走官方 PyPI 經 proxy |
-| **trusted host** | `PIP_TRUSTED_HOST` | 鏡像用**自簽憑證**時填鏡像主機名（只填主機名、一個）。會同時給 `pip --trusted-host` 與 `uv --allow-insecure-host` |
-| 公司 CA | `certs/*.crt` | proxy 會**攔截 TLS**、或鏡像用公司內部 CA 簽的憑證。放進去後 build 與執行階段都信任，通常就不需要 trusted host |
+| `BASE_IMAGE` | `python:3.11-slim`（預設）或 `registry.corp/python:3.11-slim` | 內網 registry 有鏡像就填，daemon 就不必出外網 |
+| `HTTPS_PROXY`、`HTTP_PROXY` | `http://proxy.corp:3128` | 必填 |
+| `NO_PROXY` | `localhost,127.0.0.1,auth.corp.example` | 腳本會自動放 Auth Center 主機名 |
+| `PIP_INDEX_URL` | 內部鏡像的 simple index，例 `https://nexus.corp/repository/pypi-proxy/simple` | 沒有鏡像就留空，走官方 PyPI 經 proxy |
+| **`PIP_TRUSTED_HOST`** | 用鏡像 → `nexus.corp`；走官方 PyPI → `pypi.org,files.pythonhosted.org` | **必填**，逗號分隔可多個。內網 proxy 幾乎都會攔 TLS，沒設幾乎一定 fail。會同時給 `pip --trusted-host` 與 `uv --allow-insecure-host`，每個主機各加一次 |
 
-`setup.sh` A6 會逐項問，`PIP_TRUSTED_HOST` 預設帶鏡像主機名；結尾會列出實際會帶入的值。
-手寫的話 `.env` 長這樣：
+走官方 PyPI 時 **兩個主機都要**：index 在 `pypi.org`，套件檔案在 `files.pythonhosted.org`；只填一個會在下載第一個 wheel 時才炸。
+`setup.sh` 會依你有沒有填鏡像自動給對的預設，結尾列出實際會帶入的值。
 
-```env
-HTTPS_PROXY=http://proxy.corp:3128
-HTTP_PROXY=http://proxy.corp:3128
-NO_PROXY=localhost,127.0.0.1,auth.corp.example
-PIP_INDEX_URL=https://nexus.corp/repository/pypi-proxy/simple
-PIP_TRUSTED_HOST=nexus.corp
-```
+公司 CA 放 `certs/*.crt` 是比 trusted host 更正確的做法（不略過驗證、執行階段連 Auth Center 也會用到）；
+兩個一起設也沒衝突，先求 build 過再說。
 
 這些是 **build args**（`docker-compose.yml` 的 `build.args`），`docker compose build` 自動帶入，
-**不會**進到執行中的容器（執行階段要不要走 proxy是 B5 另外決定的）。
+**不會**進到執行中的容器（執行階段要不要走 proxy 是 B5 另外決定的）。
 
-判斷方式：
+### 3.2 base image：內網 registry 或 daemon proxy
 
-- build 卡在 `pip install` / `uv sync` 沒有進度 → 沒有 proxy
-- `certificate verify failed` / `SSL: CERTIFICATE_VERIFY_FAILED` → 鏡像或 proxy 的憑證不被信任：放 CA 進 `certs/`（正解），或設 `PIP_TRUSTED_HOST`（略過驗證）
-- `403` / `401` 從鏡像回來 → `PIP_INDEX_URL` 路徑不對，或鏡像要帳密（`https://user:pw@nexus.corp/...`）
+`FROM` 那一行是 daemon 去拉 image，**不吃 proxy 類的 build args**。兩條路擇一：
+
+**A. 指到內網 registry（推薦）**：A6 的 `BASE_IMAGE` 填 `registry.corp/python:3.11-slim`，daemon 完全不用出外網。
+（`python:3.11-slim` 目前等同 `python:3.11-slim-bookworm`，內網鏡像通常只有前者。）
+
+**B. 給 daemon 設 proxy**：`setup.sh` 結尾會檢查，daemon 沒 proxy、本機又沒有 base image 就警示。
+
+```bash
+sudo mkdir -p /etc/systemd/system/docker.service.d
+sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'
+[Service]
+Environment="HTTPS_PROXY=http://proxy.corp:3128" "HTTP_PROXY=http://proxy.corp:3128" "NO_PROXY=localhost,127.0.0.1"
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+docker info | grep -i proxy        # 應看到 HTTPS Proxy: http://proxy.corp:3128
+```
+
+**C. 手動搬**：有網路的機器 `docker pull python:3.11-slim && docker save -o py.tar python:3.11-slim`，
+搬進來 `docker load -i py.tar`，之後 build 就不需要拉。
+
+### 3.3 錯誤怎麼判讀
+
+| 現象 | 原因 | 處理 |
+|---|---|---|
+| 第一步 `FROM` 就 `failed to resolve source metadata` / 卡住 | daemon 拉不到 base image | 3.2：`BASE_IMAGE` 指內網 registry，或 daemon 設 proxy |
+| 卡在 `pip install` / `uv sync` 沒有進度 | 容器內沒 proxy | A6 設 `HTTPS_PROXY` |
+| `certificate verify failed` / `SSL: CERTIFICATE_VERIFY_FAILED` | proxy 攔 TLS 或鏡像自簽 | A6 設 `PIP_TRUSTED_HOST`，或 CA 放 `certs/` |
+| 官方 PyPI 模式下 index 過了、第一個套件下載才炸 | trusted host 只填了 `pypi.org` | 補 `files.pythonhosted.org` |
+| 鏡像回 `403` / `401` | `PIP_INDEX_URL` 路徑錯，或要帳密 | 對照 Nexus 的 simple index 路徑；帳密寫成 `https://user:pw@nexus.corp/...` |
 
 > 注意：主機 shell 若已 `export HTTPS_PROXY`，compose 代換時 **shell 環境變數優先於 `.env`**。
 > 兩者通常相同所以沒事；build 行為不如預期時先 `env | grep -i proxy`。
@@ -282,9 +312,7 @@ location / {
 
 | 現象 | 原因 | 處理 |
 |---|---|---|
-| **build 卡在 `pip install` / `uv sync`** | 沒有 proxy | `setup.sh --env-only` A6 設 `HTTPS_PROXY` |
-| **build 出現 `certificate verify failed`** | 鏡像 / proxy 憑證不被信任 | CA 放 `certs/`，或 A6 設 `PIP_TRUSTED_HOST` |
-| build 從鏡像拿到 403 / 401 | `PIP_INDEX_URL` 路徑錯或要帳密 | 對照 Nexus 的 simple index 路徑 |
+| **build 任何階段失敗** | proxy / trusted host / daemon proxy | **第 3 節有完整判讀表** |
 | 容器啟動就退出，log「DATA_DIR 不可寫」 | volume / 目錄權限 | `chown -R 10001:10001 <目錄>`（B3 選主機目錄時腳本會幫做） |
 | `/readyz` 回 503 | 看 `checks` 哪一項 `fail` | `database`：DB 連不上；`data_dir`：同上一列 |
 | `docker compose config`「required variable X is missing」 | `.env` 缺必填 | `setup.sh --env-only` |
