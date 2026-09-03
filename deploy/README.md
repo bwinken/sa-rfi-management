@@ -232,40 +232,65 @@ docker compose up -d               # 只重建 app 容器，volume 原封不動
 docker compose logs -f app
 ```
 
-資料表由 App 啟動時自動建立 / 補齊，不需要手動 migration。升級前先備份（第 7 節），花不到一秒。
+資料表由 App 啟動時自動建立 / 補齊，不需要手動 migration。
+升級**不會**動到 volume 裡的資料；升級前跑一下 `bash deploy/backup.sh` 純粹是保險，幾秒鐘的事。
+要回滾：`.env` 的 `ASSET_VERSION` 改回上一個值、`docker compose up -d`（舊 image 還在，不用重 build）。
 
 ---
 
 ## 7. 備份與還原
 
-備份腳本在 image 裡，掛上同一個 volume 就能跑，**服務不用停**（SQLite 走 online backup API）：
+先講清楚**為什麼還要備份**：資料本來就在 volume / 主機目錄上，升級、重啟、換 image 都不會掉；
+備份防的是另一類事——硬碟壞掉、有人匯錯 Excel 蓋掉一批、誤刪附件、要搬到另一台機器。
+
+### 備份：`bash deploy/backup.sh`
 
 ```bash
-mkdir -p /srv/sa-rfi-backups
-docker run --rm \
-    -v sa-rfi-management_sa-rfi-data:/data \
-    -v /srv/sa-rfi-backups:/backups \
-    sa-rfi-management:latest python scripts/backup.py /backups
-# 產出：sa_rfi_<時間>.db 與 uploads_<時間>.tar.gz
+bash deploy/backup.sh                    # → /srv/sa-rfi-backups/
+bash deploy/backup.sh /mnt/nas/sa-rfi    # 指定目的目錄
+bash deploy/backup.sh --dry-run          # 只看會執行什麼
 ```
 
-主機目錄模式把 `-v sa-rfi-management_sa-rfi-data:/data` 換成 `-v /srv/sa-rfi/data:/data`。
+**服務不用停**。腳本讀 `docker-compose.yml` / `.env` 自動判斷：
+
+| 模式 | 資料庫怎麼備 | 附件 |
+|---|---|---|
+| SQLite | 在 app 容器裡跑 `scripts/backup.py`，用 SQLite online backup API 取一致性快照 → `sa_rfi_<時間>.db` | 同一次打包成 `uploads_<時間>.tar.gz` |
+| PostgreSQL | `docker compose exec db pg_dump -Fc` → `sa_rfi_<時間>.dump` | 同上 |
+
+透過 `docker compose run` 掛的是 compose 定義的那份 `/data`，所以 volume 模式或主機目錄模式都不用改指令。
+各保留最近 14 份，舊的自動清掉。產出檔由 root 擁有（容器內以 root 執行才寫得進主機目錄）。
+
 cron 每日 02:00：
 
 ```cron
-0 2 * * * docker run --rm -v sa-rfi-management_sa-rfi-data:/data -v /srv/sa-rfi-backups:/backups sa-rfi-management:latest python scripts/backup.py /backups
+0 2 * * * cd /path/to/sa-rfi-management && bash deploy/backup.sh >> /var/log/sa-rfi-backup.log 2>&1
 ```
 
-還原（會蓋掉現有資料，先停服務）：
+### 還原（會蓋掉現有資料，先停服務）
+
+SQLite：
 
 ```bash
 docker compose down
-docker run --rm -v sa-rfi-management_sa-rfi-data:/data -v /srv/sa-rfi-backups:/b alpine sh -c '
+docker compose run --rm -T --no-deps --user 0 -v /srv/sa-rfi-backups:/b app sh -c '
     cp /b/sa_rfi_<時間>.db /data/sa_rfi.db &&
     rm -rf /data/uploads && tar xzf /b/uploads_<時間>.tar.gz -C /data &&
     chown -R 10001:10001 /data'
 docker compose up -d
 ```
+
+PostgreSQL：
+
+```bash
+docker compose stop app
+docker compose exec -T db pg_restore -U sarfi -d sa_rfi --clean --if-exists --no-owner < /srv/sa-rfi-backups/sa_rfi_<時間>.dump
+docker compose run --rm -T --no-deps --user 0 -v /srv/sa-rfi-backups:/b app sh -c '
+    rm -rf /data/uploads && tar xzf /b/uploads_<時間>.tar.gz -C /data && chown -R 10001:10001 /data'
+docker compose up -d
+```
+
+搬到另一台機器：新機器跑完 `setup.sh`、`docker compose up -d` 建好空的 volume 後，用同樣的還原指令灌進去。
 
 ---
 
@@ -342,5 +367,6 @@ location / {
 | `deploy/kubernetes.yaml` | K8s 範例（PVC、Secret、probes、fsGroup） |
 | `.env`、`docker-compose.yml`（根目錄，**不進 git**） | 腳本產生的實際設定 |
 | `certs/` | 公司 CA（build 與執行階段都會信任） |
-| `scripts/backup.py` | 線上備份 |
+| `deploy/backup.sh` | 線上備份（自動判斷 SQLite / PostgreSQL、volume / 主機目錄） |
+| `scripts/backup.py` | 備份的實作，被 `backup.sh` 在容器內呼叫；本機開發也可直接跑 |
 | `scripts/migrate_sqlite_to_postgres.py` | SQLite → PostgreSQL 搬移 |

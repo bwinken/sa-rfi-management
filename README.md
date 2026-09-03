@@ -414,16 +414,16 @@ deploy/kubernetes.yaml  Kubernetes 部署範例（PVC / probes / fsGroup）
 PostgreSQL 走 `pg_dump -Fc`），附件目錄一併打包：
 
 ```bash
-uv run python scripts/backup.py /data/backups
+# 本機開發
+uv run python scripts/backup.py ./backups
 
-# 容器部署時，讓備份工作掛上同一個 data volume：
-docker run --rm -v sa-rfi-data:/data -v /srv/backups:/backups \
-    -e DATA_DIR=/data sa-rfi-management:latest \
-    python scripts/backup.py /backups
-
-# 建議搭配 cron，每日 02:00：
-# 0 2 * * * cd /path/to/sa-rfi-management && .venv/bin/python scripts/backup.py /data/backups
+# 容器部署：用 deploy/backup.sh，會自動判斷 SQLite / PostgreSQL 與資料掛載方式
+bash deploy/backup.sh                    # → /srv/sa-rfi-backups/
+# cron 每日 02:00：
+# 0 2 * * * cd /path/to/sa-rfi-management && bash deploy/backup.sh >> /var/log/sa-rfi-backup.log 2>&1
 ```
+
+還原步驟見 `deploy/README.md` 第 7 節。
 
 預設保留最近 14 份（`BACKUP_KEEP` 可調）。
 
