@@ -9,7 +9,7 @@
 <div class="page-head">
     <div>
         <h1>API Token</h1>
-        <p class="muted tiny">供腳本、Excel、MCP 等程式化讀取使用。只能讀，不能新增或修改 RFI。</p>
+        <p class="muted tiny">供腳本、Excel 等程式化讀取使用。只能讀，不能新增或修改 RFI。</p>
     </div>
 </div>
 
@@ -35,7 +35,7 @@
         <div class="field-row">
             <label class="field-label" for="name">用途說明 <span class="req">*</span></label>
             <input type="text" id="name" name="name" maxlength="128" required
-                   placeholder="例：週報自動化腳本、Claude MCP、Excel 樞紐分析">
+                   placeholder="例：週報自動化腳本、Excel 樞紐分析">
             <p class="field-hint">寫清楚給誰用，日後要撤銷時才知道動到誰。</p>
         </div>
         <div class="field-row">
@@ -112,8 +112,6 @@
         </tbody>
     </table>
     <p class="field-hint" style="margin-top:12px">
-        同一支 token 也可用於 MCP（<code>{{ settings.APP_BASE_URL }}/mcp/</code>），
-        在 MCP client 設定裡加上 <code>Authorization: Bearer &lt;token&gt;</code> 標頭即可。
         互動式文件見 <a href="{{ root }}/docs" target="_blank" rel="noopener">/docs</a>。
         新增與修改 RFI 只能在網頁上做 —— 那樣才會留下修改說明與逐欄位紀錄。
     </p>

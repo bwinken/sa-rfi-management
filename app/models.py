@@ -102,7 +102,7 @@ class ApiToken(Base):
     """個人 API Token — 供程式化讀取使用。
 
     Auth Center 的 JWT 只有 12 小時且沒有 refresh，不適合放在腳本或
-    MCP 設定檔裡。這裡讓使用者自行簽發長期有效、可隨時撤銷的唯讀 token：
+    排程設定裡。這裡讓使用者自行簽發長期有效、可隨時撤銷的唯讀 token：
     只在建立當下顯示一次，資料庫只存 SHA-256 雜湊。
     """
 

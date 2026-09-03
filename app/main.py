@@ -23,7 +23,6 @@ from sqlalchemy import text
 
 from .database import engine, init_db
 from .log import setup_logging
-from .mcp_server import build_mcp_app, mcp as mcp_server
 from .query import query_string
 from .routes import api as api_routes
 from .routes import exports as exports_routes
@@ -51,15 +50,10 @@ async def lifespan(app: FastAPI):
     prepare_storage(settings)
     await init_db()
 
-    # 用 async with 包住整段：MCP 的 session manager 內部是 anyio task group，
-    # 進入與離開必須在同一個 task，手動 __aenter__ / aclose 會踩到
-    # "cancel scope in a different task"。
     async with AsyncExitStack() as stack:
         app.state.http_client = await stack.enter_async_context(
             httpx.AsyncClient(timeout=10.0)
         )
-        if settings.MCP_ENABLED:
-            await stack.enter_async_context(mcp_server.session_manager.run())
         logger.info(
             "SA RFI 平台啟動 | base_url={} | db={} | data_dir={} | upload_dir={} | dev_bypass={}",
             settings.APP_BASE_URL, _safe_db_url(settings.DATABASE_URL),
@@ -141,9 +135,6 @@ app.include_router(exports_routes.router)
 app.include_router(tokens_routes.router)
 # 唯讀 JSON API（/api/v1）—— 認證接受 Auth Center JWT 或個人 API Token
 app.include_router(api_routes.router)
-# MCP server（/mcp）—— 認證用個人 API Token，工具與 API 共用同一套查詢邏輯
-if settings.MCP_ENABLED:
-    app.mount("/mcp", build_mcp_app())
 
 
 @app.exception_handler(HTTPException)

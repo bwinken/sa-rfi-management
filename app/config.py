@@ -68,9 +68,6 @@ class Settings:
     UPLOAD_DIR: Path = Path(os.getenv("UPLOAD_DIR") or (DATA_DIR / "uploads"))
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "25"))
 
-    # 是否掛載 MCP server（/mcp）。測試與不需要 MCP 的部署可關閉。
-    MCP_ENABLED: bool = _bool("MCP_ENABLED", "true")
-
     # 靜態資源版本（快取破壞用）。多副本部署時請設成 image tag / commit sha，
     # 讓每個副本回傳同一個值；未設定則以啟動時間為準。
     ASSET_VERSION: str = os.getenv("ASSET_VERSION", "")

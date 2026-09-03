@@ -1,6 +1,6 @@
 """個人 API Token 的管理介面。
 
-Auth Center 的 JWT 只有 12 小時且沒有 refresh，放進腳本或 MCP 設定檔
+Auth Center 的 JWT 只有 12 小時且沒有 refresh，放進腳本或排程設定
 會變成每天都要重新貼一次。這裡讓使用者自行簽發長期有效的唯讀 token，
 用完或外洩隨時可以撤銷。
 """
