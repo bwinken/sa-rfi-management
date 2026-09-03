@@ -33,6 +33,12 @@ services:
       # 正式使用時請在 .env 設定；只是先跑起來看畫面（DEV_AUTH_BYPASS=true）可留空
       CLIENT_SECRET: ${CLIENT_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # 留空 = 自動組出 {APP_BASE_URL}/auth/callback，須與 Auth Center 註冊值一致
+      REDIRECT_URI: ${REDIRECT_URI:-}
+      # 留空 = 自動用 {AUTH_CENTER_BASE_URL}/.well-known/jwks.json；填 off 停用
+      JWKS_URL: ${JWKS_URL:-}
+      # 離線後備公鑰：把 Auth Center 的 public.pem 放進 volume 的 keys/ 底下即可
+      PUBLIC_KEY_PATH: ${PUBLIC_KEY_PATH:-/data/keys/public.pem}
 
       # ── 狀態：容器內一律寫在 /data，對應下方的 volume ──
       DATA_DIR: /data

@@ -54,9 +54,11 @@ class Settings:
     PUBLIC_KEY_PATH: str = os.getenv("PUBLIC_KEY_PATH", "./keys/public.pem")
     ALGORITHM: str = "RS256"
     # Auth Center 的 JWKS 端點（OIDC 標準）；用來自動取得驗章公鑰，免去
-    # 手動維護 public.pem。未設定時自動由 AUTH_CENTER_BASE_URL 推導；
-    # 設為空字串可停用 JWKS、只用本地 PEM。
-    _JWKS_URL_RAW = os.getenv("JWKS_URL")
+    # 手動維護 public.pem。留空（或未設定）時自動由 AUTH_CENTER_BASE_URL 推導；
+    # 設為 off 則停用 JWKS、只用本地 PEM。
+    # 「留空 = 自動」而不是「留空 = 停用」，是為了讓 docker compose 用
+    # ${JWKS_URL:-} 一律帶入這個變數時，沒填的人仍然走自動推導。
+    JWKS_URL: str = os.getenv("JWKS_URL", "").strip()
 
     # ── 狀態存放位置 ─────────────────────────────────────────
     # 這個 App 的容器本身是 stateless 的：所有會被寫入、且重啟後必須還在的
@@ -121,10 +123,12 @@ class Settings:
 
     @property
     def jwks_url(self) -> str:
-        """JWKS 端點；未設定 JWKS_URL 時由 AUTH_CENTER_BASE_URL 推導，空字串表示停用。"""
-        if self._JWKS_URL_RAW is None:
-            return self.AUTH_CENTER_BASE_URL.rstrip("/") + "/.well-known/jwks.json"
-        return self._JWKS_URL_RAW
+        """JWKS 端點；JWKS_URL 留空時由 AUTH_CENTER_BASE_URL 推導，off 表示停用（回傳空字串）。"""
+        if self.JWKS_URL.lower() == "off":
+            return ""
+        if not self.JWKS_URL:
+            return self.AUTH_CENTER_BASE_URL + "/.well-known/jwks.json"
+        return self.JWKS_URL
 
 
 def prepare_storage(s: "Settings") -> None:

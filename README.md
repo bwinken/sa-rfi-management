@@ -140,7 +140,7 @@ Token 一律只有 `read` 權限 —— 即使建立者本人有 `write` / `admi
 
 ```bash
 uv sync                 # 會一併安裝 dev 相依（pytest / ruff）
-uv run pytest           # 188 個測試，約 15 秒
+uv run pytest           # 191 個測試，約 15 秒
 uv run ruff check app scripts tests
 ```
 
@@ -333,7 +333,7 @@ python scripts/manage_permissions.py grant <employee> sa_rfi_management --level 
 | `APP_ID` | 在 apps.yaml 註冊的 App ID | `sa_rfi_management` |
 | `CLIENT_SECRET` | App 明文密鑰 | — |
 | `REDIRECT_URI` | OAuth callback，留空自動組出 | （自動） |
-| `JWKS_URL` | 驗章公鑰端點，留空自動推導；設為空字串則停用 | （自動） |
+| `JWKS_URL` | 驗章公鑰端點，留空自動推導；填 `off` 則停用、只用本地 PEM | （自動） |
 | `PUBLIC_KEY_PATH` | 離線後備的 RS256 公鑰路徑 | `./keys/public.pem` |
 | `SQLITE_PATH` | 單獨指定 SQLite 檔位置（一般不需要，用 `DATA_DIR` 即可） | `{DATA_DIR}/sa_rfi.db` |
 | `UPLOAD_DIR` | 單獨指定附件目錄（一般不需要） | `{DATA_DIR}/uploads` |
@@ -365,7 +365,7 @@ static/js/filters.js   多選篩選器互動（停用 JS 時仍可用「套用�
 scripts/backup.py      資料庫備份（SQLite online backup / pg_dump）+ 附件打包
 scripts/migrate_sqlite_to_postgres.py  SQLite → PostgreSQL 資料搬移
 scripts/seed_demo.py   示範資料
-tests/             pytest 測試（188 個）
+tests/             pytest 測試（191 個）
 .github/workflows/ci.yml  CI
 uploads/           附件儲存（預設值；實際位置由 DATA_DIR 決定）
 Dockerfile         多階段建置，非 root 執行
