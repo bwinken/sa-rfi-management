@@ -295,14 +295,20 @@ Kubernetes 請設 `securityContext.fsGroup: 10001` 讓 volume 權限對齊。
 於 Auth Center 的 `config/apps.yaml` 新增：
 
 ```yaml
-sa_rfi_management:
-  name: SA RFI 管理平台
-  client_secret: <bcrypt hash of CLIENT_SECRET>
-  redirect_uri: http://localhost:8003/auth/callback
-  app_url: http://localhost:8003
-  default_level: 1          # 預設給 read；需要 write 的 SA 授 level 2
-  token_expire_hours: 12
+apps:
+  - app_id: sa_rfi_management
+    name: SA RFI 管理平台
+    client_secret: <bcrypt hash of CLIENT_SECRET>   # from passlib.hash import bcrypt; bcrypt.hash("...")
+    redirect_uri: http://localhost:8003/auth/callback   # 必須與本平台的 REDIRECT_URI 完全一致
+    app_url: http://localhost:8003
+    allowed_orgs: ["<SA 部門的 org_id>"]   # default_level 只在 allowed_orgs 非空時生效
+    default_level: 1          # 組織內預設 read；需要 write 的 SA 另外授 level 2
+    token_expire_hours: 12
 ```
+
+也可以直接在 Auth Center 的 Admin UI「應用程式」頁面新增，會自動產生 client_secret。
+`redirect_uri` 是逐字比對的：本平台預設由 `APP_BASE_URL + /auth/callback` 組出，
+若走反向代理或改了網域，兩邊要一起改。
 
 驗章公鑰建議走 JWKS（免維護 public.pem）；離線環境則把 Auth Center 的
 `keys/public.pem` 複製到本專案 `keys/public.pem`（路徑由 `PUBLIC_KEY_PATH` 設定）。

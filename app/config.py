@@ -42,7 +42,9 @@ class Settings:
     ).rstrip("/")
 
     # Auth Center
-    AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000")
+    # Auth Center 簽發 JWT 的 iss 是去掉尾端斜線的 base URL，這裡同樣正規化，
+    # 否則 .env 多打一個「/」就會全部驗證失敗（InvalidIssuerError）
+    AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000").rstrip("/")
     APP_ID: str = os.getenv("APP_ID", "sa_rfi_management")
     CLIENT_SECRET: str = os.getenv("CLIENT_SECRET", "sa_rfi_secret_change_me")
     # 未指定時，自動以 APP_BASE_URL 組出 callback
