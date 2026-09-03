@@ -1,0 +1,16 @@
+# override：讓「執行階段」也走 proxy（容器連 Auth Center 需要經過 proxy 時才用）。
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.proxy.yml up -d
+#
+# 主組態刻意只把 proxy 用在 build 階段；疊上這份才會帶進容器。
+# 務必把 Auth Center 的主機名放進 NO_PROXY，除非它真的要透過 proxy 才到得了。
+
+services:
+  app:
+    environment:
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+      https_proxy: ${HTTPS_PROXY:-}
+      http_proxy: ${HTTP_PROXY:-}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1}

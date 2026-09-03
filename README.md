@@ -173,10 +173,14 @@ App 本身是 **stateless** 的：容器裡沒有任何重啟後還需要的東�
 匯出的 Excel / PPT 全在記憶體組完直接回應，不落地。
 
 ```bash
-cp .env.example .env      # 填 CLIENT_SECRET 等；內網再加 proxy 設定（見下）
+bash deploy/1_env_setup.sh   # 逐項問你、產生 .env（或 cp deploy/.env.example .env 手填）
+docker compose build         # 內網要走 proxy，腳本會問
 docker compose up -d
 docker compose logs -f app
 ```
+
+完整部署手冊（Auth Center 註冊、內網 proxy、離線公鑰、升級、備份還原、
+反向代理、故障排除）見 **[`deploy/README.md`](deploy/README.md)**。
 
 Auth Center 還沒接好、只想先把畫面跑起來看，可在 `.env` 加 `DEV_AUTH_BYPASS=true`
 （**正式環境務必移除**）。
